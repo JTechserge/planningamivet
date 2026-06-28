@@ -917,7 +917,10 @@ function openChangePasswordModal(){
 // via Supabase puisque c'est le script GitHub Actions (côté serveur) qui les lit, pas
 // seulement ce navigateur. La modale affiche d'abord "Chargement…" puis se met à jour
 // avec la valeur réellement en vigueur dès que la requête répond.
-const EMAIL_FREQUENCY_LABELS = { daily:'Quotidienne', weekly:'Hebdomadaire', biweekly:'Toutes les 2 semaines', monthly:'Mensuelle', now:'Immédiate (test) — envoie à chaque vérification' };
+// "now" (envoi à chaque vérification) a existé temporairement pour les tests, mais fait
+// double emploi avec le bouton "Envoyer maintenant" plus bas — retiré pour éviter qu'il
+// reste choisi comme fréquence "normale" et spamme la boîte mail chaque jour.
+const EMAIL_FREQUENCY_LABELS = { weekly:'Hebdomadaire', monthly:'Mensuelle' };
 async function fetchEmailSettings(){
   const res = await fetch(`${SUPABASE_URL}email_settings?select=*&id=eq.singleton`, { headers: supabaseHeaders() });
   if(!res.ok) throw new Error(`HTTP ${res.status}`);

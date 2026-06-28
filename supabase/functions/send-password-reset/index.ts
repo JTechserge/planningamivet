@@ -1,11 +1,12 @@
 // Appelée directement par le site quand quelqu'un clique "Mot de passe oublié ?" — envoie le
 // lien de réinitialisation immédiatement (plus besoin d'attendre le cron GitHub Actions).
 // Tourne côté serveur (Deno, sur l'infra Supabase), donc la clé Resend reste secrète.
+import { wrapEmailHtml, buttonHtml, APP_URL, COLORS } from '../_shared/email-template.ts';
+
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!;
 const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY')!;
-const APP_URL = 'https://jtechserge.github.io/planningamivet/amivet-planning.html';
 const RESET_VALID_MS = 30 * 60 * 1000;
 
 const CORS_HEADERS = {
@@ -53,6 +54,14 @@ Deno.serve(async (req) => {
       '',
       '— Amivet Planning (envoi automatique)',
     ].join('\n');
+    const html = wrapEmailHtml(`
+      <h1 style="font-size:18px;color:${COLORS.text};margin:0 0 12px;">🔑 Réinitialisation du mot de passe</h1>
+      <p style="font-size:14px;color:${COLORS.textMuted};line-height:1.6;margin:0 0 20px;">Une réinitialisation du mot de passe de l'onglet Tableau de bord a été demandée.</p>
+      ${buttonHtml(resetLink, 'Choisir un nouveau mot de passe')}
+      <p style="font-size:12.5px;color:${COLORS.textMuted};line-height:1.6;margin:0 0 4px;">Ce lien est valable 30 minutes. Si le bouton ne fonctionne pas, copiez ce lien :</p>
+      <p style="font-size:12px;color:${COLORS.primary};word-break:break-all;margin:0 0 20px;">${resetLink}</p>
+      <p style="font-size:12px;color:${COLORS.textFaint};margin:0;">Si vous n'êtes pas à l'origine de cette demande, ignorez cet email : aucun changement ne sera effectué.</p>
+    `);
 
     const emailRes = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -62,6 +71,7 @@ Deno.serve(async (req) => {
         to: [recipient],
         subject: 'Amivet Planning — Réinitialisation du mot de passe',
         text,
+        html,
       }),
     });
     if(!emailRes.ok) throw new Error(`Resend a répondu HTTP ${emailRes.status} — ${await emailRes.text()}`);
