@@ -228,6 +228,7 @@ body.forecast-theme{background:var(--color-forecast);}
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 .row-label.corner{background:var(--color-secondary);border-bottom:1px solid var(--color-border);}
+.row-label.overtime-row-label{white-space:normal;font-size:8.5px;line-height:1.15;}
 tbody .row-label{border-top:1.5px solid var(--color-border);}
 
 .cth{
@@ -288,6 +289,9 @@ tbody .row-label{border-top:1.5px solid var(--color-border);}
   position:absolute;bottom:0;right:1px;font-size:5.5px;font-weight:800;
   color:#7C3AED;line-height:1;
 }
+.cal-cell.overtime-row-cell{background:#fff;color:#7C3AED;cursor:pointer;}
+.cal-cell.overtime-row-cell:hover{background:var(--color-secondary);}
+.ot-row-total{font-size:8.5px;font-weight:800;}
 
 /* ============================================================
    Légende
@@ -382,7 +386,7 @@ tbody .row-label{border-top:1.5px solid var(--color-border);}
 .modal-box{background:#fff;border-radius:var(--radius-card);box-shadow:var(--shadow-lg);padding:24px;width:380px;}
 .modal-box h3{font-size:16px;margin-bottom:8px;}
 .modal-box p{font-size:13px;color:var(--color-text-muted);margin-bottom:18px;}
-.modal-box input[type=password],.modal-box input[type=text]{
+.modal-box input[type=password],.modal-box input[type=text],.modal-box input[type=email]{
   width:100%;padding:9px 11px;border:1px solid var(--color-border);border-radius:8px;font-family:inherit;font-size:13px;
 }
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;}
@@ -542,6 +546,9 @@ table.recap-table tfoot td{font-weight:800;border-top:2px solid var(--color-bord
             <hr>
             <div class="settings-section-label">Sécurité</div>
             <button id="action-change-password" role="menuitem">🔒 Modifier le mot de passe</button>
+            <hr>
+            <div class="settings-section-label">Notifications</div>
+            <button id="action-email-settings" role="menuitem">📧 Email récapitulatif des congés</button>
             <hr>
             <div class="settings-section-label">Données</div>
             <button id="action-export" role="menuitem">⬇️ Exporter JSON</button>
@@ -722,6 +729,7 @@ const SLOT_LABELS = { M:'Matin', AM:'Après-midi' };
 const YEARS = [2026, 2027];
 const STORAGE_KEY = 'amivet_planning_data';
 const PERSON_COLORS_KEY = 'amivet_person_colors';
+const VIEW_STATE_KEY = 'amivet_view_state';
 
 /* ----------------------------------------------------------------
    1bis. COULEURS PERSONNALISABLES DES ASSOCIÉS
@@ -887,6 +895,81 @@ function openChangePasswordModal(){
   };
   backdrop.onclick = (e)=>{ if(e.target===backdrop) close(); };
   box.querySelector('#pwd-current').focus();
+}
+
+// Réglages de l'email récapitulatif des congés ASV (destinataire + fréquence), partagés
+// via Supabase puisque c'est le script GitHub Actions (côté serveur) qui les lit, pas
+// seulement ce navigateur. La modale affiche d'abord "Chargement…" puis se met à jour
+// avec la valeur réellement en vigueur dès que la requête répond.
+const EMAIL_FREQUENCY_LABELS = { daily:'Quotidienne', weekly:'Hebdomadaire', biweekly:'Toutes les 2 semaines', monthly:'Mensuelle' };
+async function fetchEmailSettings(){
+  const res = await fetch(`${SUPABASE_URL}email_settings?select=*&id=eq.singleton`, { headers: supabaseHeaders() });
+  if(!res.ok) throw new Error(`HTTP ${res.status}`);
+  const rows = await res.json();
+  if(!rows[0]) throw new Error('Aucun réglage trouvé (la table email_settings existe-t-elle ?).');
+  return rows[0];
+}
+function openEmailSettingsModal(){
+  const backdrop = document.getElementById('modal-backdrop');
+  const box = document.getElementById('modal-box');
+  box.innerHTML = `
+    <h3>📧 Email récapitulatif des congés</h3>
+    <p>Envoyé automatiquement à la clinique avec les demandes de congé ASV en attente, selon la fréquence choisie.</p>
+    <p class="text-muted" id="email-settings-loading" style="font-size:13px;">Chargement des réglages actuels…</p>
+    <div id="email-settings-form" class="hidden">
+      <p style="font-size:12.5px;color:var(--color-text-muted);margin-bottom:4px;">Adresse actuellement configurée : <strong id="email-current-value" style="color:var(--color-text);"></strong></p>
+      <input type="email" id="email-recipient-input" placeholder="cliniqueamivet@hotmail.fr" style="margin-bottom:12px;">
+      <label style="display:block;font-size:12.5px;font-weight:700;color:var(--color-text);margin-bottom:6px;">Fréquence d'envoi</label>
+      <select id="email-frequency-select" style="width:100%;padding:9px 11px;border:1px solid var(--color-border);border-radius:8px;font-family:inherit;font-size:13px;margin-bottom:6px;">
+        ${Object.entries(EMAIL_FREQUENCY_LABELS).map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}
+      </select>
+      <p class="text-muted" style="font-size:11.5px;">Le vérificateur tourne tous les jours ; au-delà de la fréquence choisie, il n'envoie un email que s'il y a au moins une demande en attente.</p>
+    </div>
+    <p id="email-settings-error" style="color:#B91C1C;font-size:12px;display:none;margin:10px 0 0;"></p>
+    <div class="modal-actions" style="margin-top:16px;">
+      <button class="btn" id="modal-cancel">Annuler</button>
+      <button class="btn btn-primary hidden" id="email-settings-save">Enregistrer</button>
+    </div>
+  `;
+  backdrop.classList.add('open');
+  const close = ()=> backdrop.classList.remove('open');
+  box.querySelector('#modal-cancel').onclick = close;
+  backdrop.onclick = (e)=>{ if(e.target===backdrop) close(); };
+
+  fetchEmailSettings().then(settings=>{
+    box.querySelector('#email-settings-loading').classList.add('hidden');
+    box.querySelector('#email-settings-form').classList.remove('hidden');
+    box.querySelector('#email-settings-save').classList.remove('hidden');
+    box.querySelector('#email-current-value').textContent = settings.recipient_email;
+    box.querySelector('#email-recipient-input').value = settings.recipient_email;
+    box.querySelector('#email-frequency-select').value = settings.frequency;
+    box.querySelector('#email-settings-save').onclick = ()=>{
+      const recipient = box.querySelector('#email-recipient-input').value.trim();
+      const frequency = box.querySelector('#email-frequency-select').value;
+      const errorEl = box.querySelector('#email-settings-error');
+      if(!recipient || !recipient.includes('@')){
+        errorEl.textContent = 'Adresse email invalide.';
+        errorEl.style.display = 'block';
+        return;
+      }
+      fetch(`${SUPABASE_URL}email_settings?id=eq.singleton`, {
+        method:'PATCH',
+        headers: supabaseHeaders({ 'Content-Type':'application/json', 'Prefer':'return=minimal' }),
+        body: JSON.stringify({ recipient_email:recipient, frequency, updated_at:new Date().toISOString() }),
+      }).then(res=>{
+        if(!res.ok) throw new Error(`HTTP ${res.status}`);
+        close();
+        showToast('Réglages email enregistrés', '📧');
+      }).catch(e=>{
+        errorEl.textContent = 'Échec de l\'enregistrement (connexion à Supabase impossible).';
+        errorEl.style.display = 'block';
+        console.warn(e);
+      });
+    };
+  }).catch(e=>{
+    box.querySelector('#email-settings-loading').textContent = 'Impossible de charger les réglages (connexion à Supabase impossible).';
+    console.warn(e);
+  });
 }
 const MONTH_NAMES = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
 const MONTH_SHORT = ['Janv','Févr','Mars','Avr','Mai','Juin','Juil','Août','Sept','Oct','Nov','Déc'];
@@ -1354,6 +1437,11 @@ function initSettingsMenu(){
     openChangePasswordModal();
   });
 
+  document.getElementById('action-email-settings').addEventListener('click', ()=>{
+    menu.classList.remove('open');
+    openEmailSettingsModal();
+  });
+
   document.getElementById('action-export').addEventListener('click', ()=>{
     const blob = new Blob([JSON.stringify(DATA, null, 2)], { type:'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1443,6 +1531,7 @@ function switchView(viewId){
     sec.classList.toggle('hidden', sec.id !== `view-${viewId}`);
   });
   renderCurrentView();
+  saveViewState();
 }
 // Renvoie l'id du conteneur DOM de la sous-page actuellement sélectionnée pour ce groupe.
 function activeSubContainer(group){
@@ -1525,6 +1614,34 @@ function switchSubPage(group, subKey){
   document.getElementById(g.annualContainer).classList.toggle('hidden', subKey !== 'annual');
   document.getElementById(g.forecastContainer).classList.toggle('hidden', subKey !== 'forecast');
   renderCurrentView();
+  saveViewState();
+}
+
+// Mémorise l'onglet et la sous-page affichés pour qu'un rechargement de page (F5) rouvre
+// la même vue plutôt que de revenir systématiquement sur "Vétérinaires". Purement
+// cosmétique : ne contient aucune donnée du planning, donc pas besoin de Supabase ici.
+function saveViewState(){
+  try{
+    localStorage.setItem(VIEW_STATE_KEY, JSON.stringify({
+      currentView,
+      subNavState,
+      annualYearState,
+      dashSubTab: (typeof dashSubState !== 'undefined') ? dashSubState.tab : undefined,
+    }));
+  }catch(e){ /* stockage indisponible : tant pis, on retombera sur la vue par défaut */ }
+}
+// Renvoie l'id de vue à restaurer (ou null si rien de valide n'a été sauvegardé), et
+// restaure au passage les sous-pages mémorisées dans les états globaux correspondants.
+function loadViewState(){
+  try{
+    const raw = localStorage.getItem(VIEW_STATE_KEY);
+    if(!raw) return null;
+    const saved = JSON.parse(raw);
+    if(saved.subNavState) Object.assign(subNavState, saved.subNavState);
+    if(saved.annualYearState) Object.assign(annualYearState, saved.annualYearState);
+    if(saved.dashSubTab && typeof dashSubState !== 'undefined') dashSubState.tab = saved.dashSubTab;
+    return saved.currentView || null;
+  }catch(e){ return null; }
 }
 function initNav(){
   document.getElementById('main-nav').addEventListener('click', (e)=>{
@@ -1874,6 +1991,30 @@ function buildPersonRowCells(year, month, days, personId){
   return html;
 }
 
+// Ligne "Heures supplémentaires" du calendrier ASV : une case par jour (pas par
+// demi-journée, contrairement aux lignes individuelles), qui ouvre une pop-up listant
+// toutes les ASV pour saisir leurs heures sup de cette date en une fois.
+function buildOvertimeRowCells(year, month, days, people){
+  let html = '';
+  days.forEach(day=>{
+    const date = new Date(year, month, day);
+    const iso = fmtISO(date);
+    if(isSunday(date)){
+      html += `<td class="cal-cell sunday-cell" colspan="2" aria-hidden="true"></td>`;
+      return;
+    }
+    const entries = people.map(p=>({ person:p, hours:getOvertimeHours(iso, p.id) })).filter(e=> e.hours > 0);
+    const total = entries.reduce((sum,e)=> sum + e.hours, 0);
+    const title = entries.length
+      ? entries.map(e=> `${e.person.short} : +${formatNum(e.hours)}h`).join(' · ')
+      : 'Cliquer pour saisir des heures supplémentaires';
+    html += `<td class="cal-cell overtime-row-cell" data-action="overtime-day" data-date="${iso}"
+      tabindex="0" role="button" title="${escapeHTML(title)}"
+      aria-label="Heures supplémentaires du ${formatFR(iso)}. ${escapeHTML(title)}">${total>0 ? `<span class="ot-row-total">+${formatNum(total)}h</span>` : ''}</td>`;
+  });
+  return html;
+}
+
 function buildHalfTable(year, month, days, people){
   let headCells = '';
   days.forEach(day=>{
@@ -1917,6 +2058,16 @@ function buildHalfTable(year, month, days, people){
       </tr>
     `;
   });
+  // Ligne supplémentaire, uniquement pour le calendrier ASV : un clic sur un jour ouvre une
+  // pop-up où saisir les heures sup de chacune des ASV pour cette date.
+  if(people.length > 0 && isASVPerson(people[0].id)){
+    bodyRows += `
+      <tr>
+        <th class="row-label overtime-row-label" style="color:var(--color-text-muted);" title="Heures supplémentaires">Heures supplémentaires</th>
+        ${buildOvertimeRowCells(year, month, days, people)}
+      </tr>
+    `;
+  }
 
   return `
     <table class="cal-table">
@@ -2197,6 +2348,42 @@ function openDayCommentPopover(iso, viewKey){
   backdrop.onclick = (e)=>{ if(e.target===backdrop) close(); };
 }
 
+// --- Popover : heures supplémentaires du jour, pour toutes les ASV à la fois (déclenché
+// depuis la ligne "Heures supplémentaires" du calendrier ASV). ---
+function openOvertimeDayPopover(iso, people, viewKey){
+  const backdrop = document.getElementById('popover-backdrop');
+  const box = document.getElementById('popover-box');
+  box.innerHTML = `
+    <h4>⏱️ Heures supplémentaires<br><span class="text-muted" style="font-weight:500;font-size:12px;">${formatFR(iso)}</span></h4>
+    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px;">
+      ${people.map(p=>`
+        <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;font-weight:700;color:var(--color-text);">
+          <span><span class="legend-swatch" style="background:${p.color};width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:middle;"></span>${p.short}</span>
+          <input type="number" min="0" step="0.5" data-overtime-popover-input data-person="${p.id}"
+            value="${getOvertimeHours(iso, p.id) || ''}" placeholder="0" style="width:80px;padding:7px 9px;border:1px solid var(--color-border);border-radius:6px;font-family:inherit;font-size:13px;">
+        </label>
+      `).join('')}
+    </div>
+    <div class="popover-actions">
+      <button class="btn" id="popover-cancel">Annuler</button>
+      <button class="btn btn-primary" id="popover-save">Enregistrer</button>
+    </div>
+  `;
+  backdrop.classList.add('open');
+  const close = ()=> backdrop.classList.remove('open');
+  box.querySelector('#popover-cancel').onclick = close;
+  box.querySelector('#popover-save').onclick = ()=>{
+    snapshotBeforeChange();
+    box.querySelectorAll('[data-overtime-popover-input]').forEach(input=>{
+      setOvertimeHours(iso, input.dataset.person, input.value);
+    });
+    saveData();
+    renderCalendarView(viewKey);
+    close();
+  };
+  backdrop.onclick = (e)=>{ if(e.target===backdrop) close(); };
+}
+
 // --- Sidebar : édition rapide de toute la journée ---
 function sidebarPersonBlock(iso, person){
   const isASV = isASVPerson(person.id);
@@ -2301,21 +2488,23 @@ function openDaySidebar(iso, viewKey){
 
 // --- Initialisation globale des interactions calendrier (délégation sur document) ---
 function initCalendarInteractions(){
+  // cell.dataset.action distingue les cases "spéciales" (ex. ligne Heures supplémentaires)
+  // qui ne participent pas au cycle vide/présent/absent ni au glisser-peindre.
   document.addEventListener('mousedown', (e)=>{
     const cell = e.target.closest('.cal-cell');
-    if(!cell || cell.classList.contains('sunday-cell') || cell.dataset.slots) return;
+    if(!cell || cell.classList.contains('sunday-cell') || cell.dataset.slots || cell.dataset.action) return;
     e.preventDefault();
     startDrag(cell);
   });
   document.addEventListener('mouseover', (e)=>{
     if(!dragCtx) return;
     const cell = e.target.closest('.cal-cell');
-    if(cell && !cell.classList.contains('sunday-cell') && !cell.dataset.slots) enterDragCell(cell);
+    if(cell && !cell.classList.contains('sunday-cell') && !cell.dataset.slots && !cell.dataset.action) enterDragCell(cell);
   });
   document.addEventListener('mouseup', endDrag);
   document.addEventListener('touchstart', (e)=>{
     const cell = e.target.closest('.cal-cell');
-    if(!cell || cell.classList.contains('sunday-cell') || cell.dataset.slots) return;
+    if(!cell || cell.classList.contains('sunday-cell') || cell.dataset.slots || cell.dataset.action) return;
     startDrag(cell);
   }, { passive:true });
   document.addEventListener('touchmove', (e)=>{
@@ -2323,13 +2512,13 @@ function initCalendarInteractions(){
     const touch = e.touches[0];
     const el = document.elementFromPoint(touch.clientX, touch.clientY);
     const cell = el && el.closest('.cal-cell');
-    if(cell && !cell.classList.contains('sunday-cell') && !cell.dataset.slots) enterDragCell(cell);
+    if(cell && !cell.classList.contains('sunday-cell') && !cell.dataset.slots && !cell.dataset.action) enterDragCell(cell);
   }, { passive:true });
   document.addEventListener('touchend', endDrag);
 
   document.addEventListener('contextmenu', (e)=>{
     const cell = e.target.closest('.cal-cell');
-    if(!cell || cell.classList.contains('sunday-cell')) return;
+    if(!cell || cell.classList.contains('sunday-cell') || cell.dataset.action) return;
     e.preventDefault();
     if(dragCtx){ clearTimeout(dragCtx.longPressTimer); dragCtx = null; }
     if(cell.dataset.slots){
@@ -2344,7 +2533,11 @@ function initCalendarInteractions(){
     if(!cell || cell.classList.contains('sunday-cell')) return;
     if(e.key === 'Enter' || e.key === ' '){
       e.preventDefault();
-      if(cell.dataset.slots){
+      if(cell.dataset.action === 'overtime-day'){
+        openOvertimeDayPopover(cell.dataset.date, CAL_VIEWS[calViewKeyOfEventTarget(cell)].people, calViewKeyOfEventTarget(cell));
+      } else if(cell.dataset.action){
+        // Autre case spéciale future sans comportement clavier dédié : ne rien faire.
+      } else if(cell.dataset.slots){
         openAbsenceRangePopover(JSON.parse(cell.dataset.slots), cell.dataset.person, calViewKeyOfEventTarget(cell));
       } else {
         cycleCellAndSave(cell);
@@ -2377,6 +2570,9 @@ function initCalendarInteractions(){
 
     const editBtn = e.target.closest('[data-action="edit-day"]');
     if(editBtn){ openDaySidebar(editBtn.dataset.date, viewKey); return; }
+
+    const overtimeBtn = e.target.closest('[data-action="overtime-day"]');
+    if(overtimeBtn){ openOvertimeDayPopover(overtimeBtn.dataset.date, CAL_VIEWS[viewKey].people, viewKey); return; }
   });
 }
 
@@ -2650,6 +2846,7 @@ function renderDashboard(){
     if(!btn) return;
     dashSubState.tab = btn.dataset.sub;
     renderDashboard();
+    saveViewState();
   });
   if(dashSubState.tab === 'stats') renderDashboardStats(); else renderLeaveRequestsPage();
 }
@@ -2972,6 +3169,7 @@ function renderAnnualViewForGroup(group){
     if(!btn) return;
     annualYearState[group] = btn.dataset.mode;
     renderAnnualViewForGroup(group);
+    saveViewState();
   });
   container.querySelectorAll('.heatmap-cell[data-date]').forEach(cell=>{
     cell.addEventListener('click', ()=> openAnnualDayDetail(cell.dataset.date, cfg.people, viewKey));
@@ -2993,7 +3191,14 @@ function init(){
   initKeyboardShortcuts();
   initCalendarInteractions();
   updateDashboardNavBadge();
-  switchView('vets');
+  const restoredView = loadViewState();
+  // loadViewState() a déjà restauré subNavState/annualYearState dans les objets globaux,
+  // mais pas l'affichage (classes "hidden") des conteneurs de sous-page, qui par défaut
+  // dans le HTML statique montrent toujours "calendar". switchSubPage applique cette
+  // visibilité pour chaque groupe, indépendamment de l'onglet réellement affiché ensuite.
+  switchSubPage('vets', subNavState.vets);
+  switchSubPage('asv', subNavState.asv);
+  switchView(VIEW_RENDERERS[restoredView] ? restoredView : 'vets');
   syncFromSupabase();
 }
 document.addEventListener('DOMContentLoaded', init);
