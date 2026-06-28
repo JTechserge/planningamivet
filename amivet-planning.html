@@ -284,6 +284,10 @@ tbody .row-label{border-top:1.5px solid var(--color-border);}
 .cal-cell.sunday-cell{background:var(--color-sunday);cursor:default;}
 .cal-cell.sunday-cell:hover{background:var(--color-sunday);}
 .cal-cell .cell-mark{font-size:10px;}
+.cal-cell .ot-badge{
+  position:absolute;bottom:0;right:1px;font-size:5.5px;font-weight:800;
+  color:#7C3AED;line-height:1;
+}
 
 /* ============================================================
    Légende
@@ -404,9 +408,18 @@ tbody .row-label{border-top:1.5px solid var(--color-border);}
 /* ============================================================
    Tableau de bord
    ============================================================ */
-.dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:24px;}
-.dash-grid-3{grid-template-columns:1fr 1fr 1fr;}
+.dash-grid{display:grid;grid-template-columns:repeat(var(--dash-cols,2),1fr);gap:18px;margin-bottom:24px;}
 .person-card{border-top:4px solid var(--color-border);}
+.asv-roster-chip{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:6px 10px;border-radius:999px;border:1.5px solid var(--color-border);
+  font-size:12.5px;font-weight:600;color:var(--color-text);
+}
+.asv-remove-btn{
+  border:none;background:transparent;color:var(--color-text-muted);font-size:11px;
+  width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+}
+.asv-remove-btn:hover{background:var(--color-absent);color:var(--color-absent-text);}
 .person-card[data-person="david"]{border-top-color:var(--color-david);}
 .person-card[data-person="stephane"]{border-top-color:var(--color-stephane);}
 .person-card-head{display:flex;align-items:center;gap:10px;margin-bottom:16px;}
@@ -551,13 +564,10 @@ table.recap-table tfoot td{font-weight:800;border-top:2px solid var(--color-bord
 
     <!-- Onglet groupé Vétérinaires : Calendrier mensuel / Vue annuelle / Prévisionnel -->
     <section id="view-vets" class="view-section">
-      <div class="sub-nav-row">
-        <div class="sub-nav" id="vets-sub-nav">
-          <button class="sub-tab active" data-sub="calendar">📅 Calendrier mensuel</button>
-          <button class="sub-tab" data-sub="annual">🗓️ Vue Annuelle</button>
-          <button class="sub-tab" data-sub="forecast">🔮 Prévisionnel</button>
-        </div>
-        <button class="btn-icon lock-now-btn" title="Verrouiller maintenant" aria-label="Verrouiller maintenant">🔒</button>
+      <div class="sub-nav" id="vets-sub-nav">
+        <button class="sub-tab active" data-sub="calendar">📅 Calendrier mensuel</button>
+        <button class="sub-tab" data-sub="annual">🗓️ Vue Annuelle</button>
+        <button class="sub-tab" data-sub="forecast">🔮 Prévisionnel</button>
       </div>
       <div id="vets-sub-calendar" class="sub-page" data-cal-view="vets-current"></div>
       <div id="vets-sub-annual" class="sub-page hidden"></div>
@@ -625,7 +635,88 @@ const ASV_PEOPLE = [
   { id:'johanna',  name:'Johanna',  short:'Johanna',  color:'#EA580C', initial:'Jo', present:PRESENT_SHADES[1] },
   { id:'julie',    name:'Julie',    short:'Julie',    color:'#059669', initial:'Ju', present:PRESENT_SHADES[2] },
 ];
-const ALL_PEOPLE = [...PEOPLE, ...ASV_PEOPLE];
+// Fonction plutôt que tableau figé : ASV_PEOPLE peut être modifié en place (ajout/retrait
+// d'une ASV depuis le tableau de bord), donc on recalcule à chaque appel pour ne jamais
+// servir une liste périmée.
+function allPeople(){ return [...PEOPLE, ...ASV_PEOPLE]; }
+
+// ----------------------------------------------------------------
+// Effectif ASV dynamique — ajout/retrait depuis le tableau de bord. ASV_PEOPLE est mutée
+// en place (push/splice) plutôt que réassignée : tout le reste de l'app (CAL_VIEWS,
+// GROUP_VIEWS, etc.) garde une référence vers ce même tableau, donc une mutation se
+// répercute automatiquement partout sans devoir reconstruire ces registres.
+const ASV_ROSTER_KEY = 'amivet_asv_roster';
+const ASV_DEFAULT_COLOR_PALETTE = ['#DB2777','#EA580C','#059669','#0EA5E9','#D946EF','#4F46E5','#0D9488','#DC2626'];
+function slugifyName(name){
+  const lower = name.toLowerCase().normalize('NFD');
+  let stripped = '';
+  for(const ch of lower){
+    const code = ch.codePointAt(0);
+    if(code >= 0x0300 && code <= 0x036f) continue; // diacritique combinant : ignoré
+    stripped += ch;
+  }
+  return stripped.replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'') || 'asv';
+}
+function uniqueASVId(base){
+  let id = base, n = 2;
+  while(PEOPLE.some(p=>p.id===id) || ASV_PEOPLE.some(p=>p.id===id)){ id = `${base}-${n}`; n++; }
+  return id;
+}
+function pickDefaultASVColor(){
+  const used = allPeople().map(p=>p.color.toLowerCase());
+  const free = ASV_DEFAULT_COLOR_PALETTE.find(c=> !used.includes(c.toLowerCase()) && !colorRejectReason(c));
+  return free || '#64748B';
+}
+// Réattribue les nuances de vert "présent" par position : nécessaire après chaque
+// ajout/retrait pour que le 1er, 2e, 3e... de la liste gardent des teintes cohérentes.
+function reindexPresentShades(){
+  ASV_PEOPLE.forEach((p,i)=> p.present = PRESENT_SHADES[i % PRESENT_SHADES.length]);
+}
+function saveASVRoster(){
+  localStorage.setItem(ASV_ROSTER_KEY, JSON.stringify(ASV_PEOPLE.map(p=>({ id:p.id, name:p.name, short:p.short, initial:p.initial, color:p.color }))));
+}
+function loadASVRoster(){
+  try{
+    const raw = localStorage.getItem(ASV_ROSTER_KEY);
+    if(raw){
+      const saved = JSON.parse(raw);
+      if(Array.isArray(saved) && saved.length){
+        ASV_PEOPLE.length = 0;
+        saved.forEach(p=> ASV_PEOPLE.push({ id:p.id, name:p.name, short:p.short, initial:p.initial, color:p.color, present:null }));
+      }
+    }
+  }catch(e){ console.warn('Effectif ASV personnalisé illisible, valeurs par défaut conservées.', e); }
+  reindexPresentShades();
+}
+// Ajoute une ASV au planning. Retourne la personne créée, ou null si le nom est vide.
+function addASVPerson(name){
+  name = (name || '').trim();
+  if(!name) return null;
+  const person = {
+    id: uniqueASVId(slugifyName(name)),
+    name, short:name,
+    initial: name.slice(0,2).toUpperCase(),
+    color: pickDefaultASVColor(),
+    present: null,
+  };
+  ASV_PEOPLE.push(person);
+  reindexPresentShades();
+  saveASVRoster();
+  savePersonColors();
+  applyPersonColorVars();
+  return person;
+}
+// Retire une ASV du planning. Ses données saisies (présences, demandes de congé) restent
+// dans le stockage local mais ne sont plus affichées nulle part — elles seraient
+// récupérables en recréant une ASV avec exactement le même identifiant interne.
+function removeASVPerson(id){
+  const idx = ASV_PEOPLE.findIndex(p=>p.id===id);
+  if(idx === -1) return;
+  ASV_PEOPLE.splice(idx,1);
+  reindexPresentShades();
+  saveASVRoster();
+}
+
 const SLOTS = ['M','AM'];
 const SLOT_LABELS = { M:'Matin', AM:'Après-midi' };
 const YEARS = [2026, 2027];
@@ -669,11 +760,11 @@ function colorRejectReason(hex){
   return null;
 }
 function applyPersonColorVars(){
-  ALL_PEOPLE.forEach(p=> document.documentElement.style.setProperty(`--color-${p.id}`, p.color));
+  allPeople().forEach(p=> document.documentElement.style.setProperty(`--color-${p.id}`, p.color));
 }
 function savePersonColors(){
   const colors = {};
-  ALL_PEOPLE.forEach(p=> colors[p.id] = p.color);
+  allPeople().forEach(p=> colors[p.id] = p.color);
   localStorage.setItem(PERSON_COLORS_KEY, JSON.stringify(colors));
 }
 function loadPersonColors(){
@@ -681,7 +772,7 @@ function loadPersonColors(){
     const raw = localStorage.getItem(PERSON_COLORS_KEY);
     if(raw){
       const colors = JSON.parse(raw);
-      ALL_PEOPLE.forEach(p=>{ if(colors[p.id]) p.color = colors[p.id]; });
+      allPeople().forEach(p=>{ if(colors[p.id]) p.color = colors[p.id]; });
     }
   }catch(e){ console.warn('Couleurs personnalisées illisibles, valeurs par défaut conservées.', e); }
   applyPersonColorVars();
@@ -718,20 +809,21 @@ function openColorPickerModal(){
   const close = ()=> backdrop.classList.remove('open');
   box.querySelector('#modal-cancel').onclick = close;
   box.querySelector('#color-save').onclick = ()=>{
+    const all = allPeople();
     const newColors = {};
-    ALL_PEOPLE.forEach(p=>{ newColors[p.id] = box.querySelector(`#color-input-${p.id}`).value; });
+    all.forEach(p=>{ newColors[p.id] = box.querySelector(`#color-input-${p.id}`).value; });
     const errorEl = box.querySelector('#color-error');
     const reasons = [];
-    ALL_PEOPLE.forEach(p=>{
+    all.forEach(p=>{
       // Une couleur déjà en place (non modifiée) n'est pas re-validée : on ne pénalise pas
       // les couleurs par défaut existantes, seulement les nouveaux choix.
       if(newColors[p.id].toLowerCase() === p.color.toLowerCase()) return;
       const reason = colorRejectReason(newColors[p.id]);
       if(reason) reasons.push(`${p.short} : ${reason}`);
     });
-    for(let i=0; i<ALL_PEOPLE.length; i++){
-      for(let j=i+1; j<ALL_PEOPLE.length; j++){
-        const a = ALL_PEOPLE[i], b = ALL_PEOPLE[j];
+    for(let i=0; i<all.length; i++){
+      for(let j=i+1; j<all.length; j++){
+        const a = all[i], b = all[j];
         if(newColors[a.id].toLowerCase() === newColors[b.id].toLowerCase()){
           reasons.push(`${a.short} et ${b.short} ne peuvent pas avoir la même couleur.`);
         }
@@ -742,7 +834,7 @@ function openColorPickerModal(){
       errorEl.style.display = 'block';
       return;
     }
-    ALL_PEOPLE.forEach(p=> p.color = newColors[p.id]);
+    all.forEach(p=> p.color = newColors[p.id]);
     savePersonColors();
     applyPersonColorVars();
     renderCurrentView();
@@ -827,10 +919,10 @@ const calStateAsvForecast = { month: 0 };
 function buildCalViews(){
   const cy = getCurrentYear();
   return {
-    'vets-current':  { year:cy,   people:PEOPLE,     navState:calStateCurrent,     todayNav:true,  forecast:false, label:'Vétérinaires', containerId:'vets-sub-calendar', gated:true,  printable:false },
-    'vets-forecast': { year:cy+1, people:PEOPLE,     navState:calStateForecast,    todayNav:false, forecast:true,  label:'Vétérinaires', containerId:'vets-sub-forecast', gated:true,  printable:false },
-    'asv-current':   { year:cy,   people:ASV_PEOPLE, navState:calStateAsvCurrent,  todayNav:true,  forecast:false, label:'ASV',          containerId:'asv-sub-calendar',  gated:false, printable:true },
-    'asv-forecast':  { year:cy+1, people:ASV_PEOPLE, navState:calStateAsvForecast, todayNav:false, forecast:true,  label:'ASV',           containerId:'asv-sub-forecast',  gated:false, printable:true },
+    'vets-current':  { year:cy,   people:PEOPLE,     navState:calStateCurrent,     todayNav:true,  forecast:false, label:'Vétérinaires', containerId:'vets-sub-calendar', printable:false },
+    'vets-forecast': { year:cy+1, people:PEOPLE,     navState:calStateForecast,    todayNav:false, forecast:true,  label:'Vétérinaires', containerId:'vets-sub-forecast', printable:false },
+    'asv-current':   { year:cy,   people:ASV_PEOPLE, navState:calStateAsvCurrent,  todayNav:true,  forecast:false, label:'ASV',          containerId:'asv-sub-calendar',  printable:true },
+    'asv-forecast':  { year:cy+1, people:ASV_PEOPLE, navState:calStateAsvForecast, todayNav:false, forecast:true,  label:'ASV',           containerId:'asv-sub-forecast',  printable:true },
   };
 }
 let CAL_VIEWS = buildCalViews();
@@ -846,7 +938,7 @@ const GROUP_VIEWS = {
 };
 
 // Verrou par mot de passe (protection légère, côté client) des onglets sensibles.
-const GATED_VIEWS = ['vets','dashboard'];
+const GATED_VIEWS = ['dashboard'];
 const PASSWORD_KEY = 'amivet_gate_password';
 const DEFAULT_GATE_PASSWORD = 'David&Stéphane26!';
 const UNLOCK_SESSION_KEY = 'amivet_gate_unlocked_at';
@@ -976,8 +1068,16 @@ function isSunday(date){ return isoWeekday(date) === 6; }
 function isSaturday(date){ return isoWeekday(date) === 5; }
 
 /* ----------------------------------------------------------------
-   4. PERSISTANCE (localStorage)
+   4. PERSISTANCE (localStorage + synchronisation Supabase partagée)
    ---------------------------------------------------------------- */
+// Clé "anon" Supabase : volontairement non secrète (protégée par les policies RLS côté
+// base, pas par le secret) — c'est le fonctionnement normal d'une clé anon Supabase,
+// faite pour être embarquée dans du code client visible publiquement.
+const SUPABASE_URL = 'https://ubowqtowyqmpraoxbaoo.supabase.co/rest/v1/';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVib3dxdG93eXFtcHJhb3hiYW9vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2MzkzNjksImV4cCI6MjA5ODIxNTM2OX0.cC7vTWrK-Ykii5dtlg_6lA5quHe6rv78IRxZT-ArV_8';
+function supabaseHeaders(extra){
+  return Object.assign({ apikey:SUPABASE_ANON_KEY, Authorization:`Bearer ${SUPABASE_ANON_KEY}` }, extra || {});
+}
 let DATA = { version:2, slots:{} };
 
 function loadData(){
@@ -994,7 +1094,45 @@ function loadData(){
 function saveData(showToast = true){
   localStorage.setItem(STORAGE_KEY, JSON.stringify(DATA));
   updateDashboardNavBadge();
+  scheduleSupabasePush();
   if(showToast) showSavedToast();
+}
+
+// --- Synchronisation Supabase : la base partagée fait foi entre tous les appareils, le
+// localStorage ne sert que de cache instantané pour le premier affichage et le hors-ligne.
+let _supabasePushTimer = null;
+function scheduleSupabasePush(){
+  clearTimeout(_supabasePushTimer);
+  // Attend une courte pause après la dernière modification (ex. fin d'un glisser-peindre)
+  // pour grouper les écritures plutôt que d'envoyer une requête à chaque case cochée.
+  _supabasePushTimer = setTimeout(pushDataToSupabase, 900);
+}
+function pushDataToSupabase(){
+  fetch(`${SUPABASE_URL}planning_data?id=eq.singleton`, {
+    method:'PATCH',
+    headers: supabaseHeaders({ 'Content-Type':'application/json', 'Prefer':'return=minimal' }),
+    body: JSON.stringify({ data: DATA.slots, updated_at: new Date().toISOString() }),
+  }).catch(e=> console.warn('Synchronisation Supabase impossible (hors ligne ?), données conservées en local.', e));
+}
+// Appelé une fois au démarrage, après le premier affichage instantané (local) : si la base
+// partagée contient déjà des données, elles font foi et remplacent la copie locale. Si elle
+// est vide (tout premier branchement), on y pousse la copie locale au lieu d'écraser les
+// données existantes avec du vide.
+async function syncFromSupabase(){
+  try{
+    const res = await fetch(`${SUPABASE_URL}planning_data?id=eq.singleton&select=data`, { headers: supabaseHeaders() });
+    if(!res.ok) return;
+    const rows = await res.json();
+    const remoteSlots = rows[0] && rows[0].data;
+    if(remoteSlots && Object.keys(remoteSlots).length > 0){
+      DATA = { version:2, slots: remoteSlots };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(DATA));
+      renderCurrentView();
+      updateDashboardNavBadge();
+    } else {
+      pushDataToSupabase();
+    }
+  }catch(e){ console.warn('Supabase inaccessible, données locales conservées.', e); }
 }
 // Notifie le nombre de demandes de congé ASV en attente directement sur l'onglet "Tableau
 // de bord", visible depuis n'importe quelle page de l'app (pas seulement quand on y est).
@@ -1027,6 +1165,16 @@ function getLeaveDecisionComment(isoDate, personId, slot){ return DATA.slots[dec
 function setLeaveDecisionComment(isoDate, personId, slot, text){
   const key = decisionCommentKey(isoDate,personId,slot);
   if(text) DATA.slots[key] = text; else delete DATA.slots[key];
+}
+
+// Heures supplémentaires ASV — un nombre d'heures par personne et par jour (pas par
+// demi-journée : une ASV peut faire 1h30 de plus sans que ça corresponde à un créneau M/AM).
+function overtimeKey(isoDate, personId){ return `${isoDate}_${personId}_overtime`; }
+function getOvertimeHours(isoDate, personId){ return parseFloat(DATA.slots[overtimeKey(isoDate,personId)]) || 0; }
+function setOvertimeHours(isoDate, personId, hours){
+  const key = overtimeKey(isoDate, personId);
+  const n = parseFloat(hours);
+  if(n > 0) DATA.slots[key] = n; else delete DATA.slots[key];
 }
 
 function getSlotState(isoDate, personId, slot){ return DATA.slots[slotKey(isoDate,personId,slot)] || 'empty'; }
@@ -1441,7 +1589,7 @@ function hexToRgba(hex, alpha){
   const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
   return `rgba(${r},${g},${b},${alpha})`;
 }
-function personOf(id){ return ALL_PEOPLE.find(p=>p.id===id); }
+function personOf(id){ return PEOPLE.find(p=>p.id===id) || ASV_PEOPLE.find(p=>p.id===id); }
 
 /* ================================================================
    12. VUE CALENDRIER (moteur partagé 2026 / 2027)
@@ -1710,10 +1858,15 @@ function buildPersonRowCells(year, month, days, personId){
       } else {
         flush();
         const info = cellRenderInfo(iso, personId, slot);
+        // Le badge d'heures supplémentaires (jour entier, pas par demi-journée) s'affiche
+        // sur la case du matin, seulement quand elle n'est pas absorbée dans une case
+        // d'absence fusionnée (où il n'y aurait pas de jour précis à désigner).
+        const overtime = slot === 'M' ? getOvertimeHours(iso, personId) : 0;
+        const otBadge = overtime > 0 ? `<span class="ot-badge" title="Heures supplémentaires : ${formatNum(overtime)}h">+${formatNum(overtime)}h</span>` : '';
         html += `<td class="cal-cell state-${info.stateClass}" style="${info.style}"
           data-date="${iso}" data-person="${personId}" data-slot="${slot}" data-slot-short="${slot==='M'?'M':'A'}"
           tabindex="0" role="button" title="${escapeHTML(info.title||'')}"
-          aria-label="${cellAriaLabel(iso, personId, slot)}">${info.html}</td>`;
+          aria-label="${cellAriaLabel(iso, personId, slot)}${overtime>0?' — '+formatNum(overtime)+'h supplémentaires':''}">${info.html}${otBadge}</td>`;
       }
     });
   });
@@ -2078,6 +2231,11 @@ function sidebarPersonBlock(iso, person){
           ${decisionNote}
         `;
       }).join('')}
+      ${isASV ? `
+        <p class="text-muted" style="font-size:11.5px;margin:14px 0 5px;font-weight:700;text-transform:uppercase;letter-spacing:0.03em;">Heures supplémentaires (ce jour)</p>
+        <input type="number" min="0" step="0.5" data-overtime-input data-person="${person.id}"
+          value="${getOvertimeHours(iso, person.id) || ''}" placeholder="Ex. 1.5">
+      ` : ''}
     </div>
   `;
 }
@@ -2116,6 +2274,14 @@ function openDaySidebar(iso, viewKey){
       input.addEventListener('change', ()=>{
         snapshotBeforeChange();
         setSlotLabel(iso, input.dataset.person, input.dataset.slot, input.value.trim());
+        saveData();
+        renderCalendarView(viewKey);
+      });
+    });
+    sidebar.querySelectorAll('[data-overtime-input]').forEach(input=>{
+      input.addEventListener('change', ()=>{
+        snapshotBeforeChange();
+        setOvertimeHours(iso, input.dataset.person, input.value);
         saveData();
         renderCalendarView(viewKey);
       });
@@ -2269,7 +2435,8 @@ function decideLeaveGroup(group, decision, comment){
 
 function computeYearStats(year){
   const stats = {};
-  ALL_PEOPLE.forEach(p=>{
+  const all = allPeople();
+  all.forEach(p=>{
     stats[p.id] = {
       halfDaysByMonth: new Array(12).fill(0),
       absentHalfDaysByMonth: new Array(12).fill(0),
@@ -2283,7 +2450,7 @@ function computeYearStats(year){
       if(isSunday(date)) continue;
       const iso = fmtISO(date);
       const saturday = isSaturday(date);
-      ALL_PEOPLE.forEach(p=>{
+      all.forEach(p=>{
         let presentAny = false;
         SLOTS.forEach(slot=>{
           const state = getSlotState(iso, p.id, slot);
@@ -2294,7 +2461,7 @@ function computeYearStats(year){
       });
     }
   }
-  ALL_PEOPLE.forEach(p=>{
+  all.forEach(p=>{
     const s = stats[p.id];
     s.totalHalfDays = s.halfDaysByMonth.reduce((a,b)=>a+b,0);
     s.totalAbsentHalfDays = s.absentHalfDaysByMonth.reduce((a,b)=>a+b,0);
@@ -2424,6 +2591,43 @@ function buildRecapTableASV(year){
   `;
 }
 
+// Heures supplémentaires ASV par mois — même structure que le récapitulatif de présence,
+// mais en sommant getOvertimeHours() (un nombre d'heures par jour, pas par demi-journée).
+function computeOvertimeStats(year){
+  const stats = {};
+  ASV_PEOPLE.forEach(p=> stats[p.id] = new Array(12).fill(0));
+  for(let month=0; month<12; month++){
+    const nbDays = daysInMonth(year, month);
+    for(let day=1; day<=nbDays; day++){
+      const iso = fmtISO(new Date(year, month, day));
+      ASV_PEOPLE.forEach(p=>{ stats[p.id][month] += getOvertimeHours(iso, p.id); });
+    }
+  }
+  return stats;
+}
+function buildOvertimeTableASV(year){
+  const stats = computeOvertimeStats(year);
+  const totals = ASV_PEOPLE.map(()=>0);
+  let grandTotal = 0, rows = '';
+  for(let m=0; m<12; m++){
+    const vals = ASV_PEOPLE.map((p,i)=>{
+      const h = stats[p.id][m];
+      totals[i] += h;
+      return h;
+    });
+    const monthTotal = vals.reduce((a,b)=>a+b,0);
+    grandTotal += monthTotal;
+    rows += `<tr><td>${MONTH_NAMES[m]}</td>${vals.map(v=>`<td>${v>0?formatNum(v):'—'}</td>`).join('')}<td>${monthTotal>0?formatNum(monthTotal):'—'}</td></tr>`;
+  }
+  return `
+    <table class="recap-table">
+      <thead><tr><th>Mois</th>${ASV_PEOPLE.map(p=>`<th>${p.short} (h)</th>`).join('')}<th>Total ASV (h)</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td>Total annuel</td>${totals.map(t=>`<td>${formatNum(t)}</td>`).join('')}<td>${formatNum(grandTotal)}</td></tr></tfoot>
+    </table>
+  `;
+}
+
 const dashSubState = { tab: 'stats' };
 function renderDashboard(){
   const container = document.getElementById('view-dashboard');
@@ -2477,21 +2681,41 @@ function renderDashboardStats(){
     </div>
 
     <h2 class="section-title" style="margin-top:8px;">ASV — Auxiliaires spécialisées vétérinaires</h2>
-    <p class="section-desc">Statistiques de présence des 3 ASV, année ${year}.</p>
-    <div class="dash-grid dash-grid-3" style="margin-top:18px;">
+    <p class="section-desc">Statistiques de présence des ASV, année ${year}.</p>
+    <div class="card" style="margin-bottom:18px;">
+      <h3 style="font-size:16px;margin-bottom:10px;">Gérer les ASV</h3>
+      <div class="flex" style="flex-wrap:wrap;gap:8px;margin-bottom:12px;">
+        ${ASV_PEOPLE.map(p=>`
+          <span class="asv-roster-chip" style="border-color:${p.color};">
+            <span class="legend-swatch" style="background:${p.color};width:10px;height:10px;border-radius:50%;display:inline-block;"></span>
+            ${escapeHTML(p.short)}
+            <button type="button" class="asv-remove-btn" data-remove-asv="${p.id}" title="Retirer ${escapeHTML(p.short)}" aria-label="Retirer ${escapeHTML(p.short)}">✕</button>
+          </span>
+        `).join('') || `<span class="text-muted" style="font-size:13px;">Aucune ASV pour le moment.</span>`}
+      </div>
+      <div class="flex gap-2">
+        <input type="text" id="new-asv-name" placeholder="Nom de la nouvelle ASV" maxlength="30" style="flex:1;padding:9px 11px;border:1px solid var(--color-border);border-radius:8px;font-family:inherit;font-size:13px;">
+        <button class="btn btn-primary" id="add-asv-btn">+ Ajouter</button>
+      </div>
+    </div>
+    <div class="dash-grid" style="margin-top:18px;--dash-cols:${Math.max(ASV_PEOPLE.length,1)};">
       ${ASV_PEOPLE.map(p=> buildPersonCard(year, p.id)).join('')}
     </div>
     <div class="card" style="margin-bottom:24px;">
-      <h3 style="font-size:16px;margin-bottom:4px;">Comparaison mensuelle — Marie / Johanna / Julie</h3>
+      <h3 style="font-size:16px;margin-bottom:4px;">Comparaison mensuelle ASV</h3>
       <p class="text-muted" style="font-size:12.5px;margin-bottom:10px;">Jours travaillés par mois, ${year}</p>
       <div class="chart-legend">
         ${ASV_PEOPLE.map(p=>`<span><span class="legend-swatch" style="background:${p.color};width:11px;height:11px;display:inline-block;border-radius:3px;"></span>${p.short}</span>`).join('')}
       </div>
       <div class="chart-wrap">${buildBarChartSVGASV(year)}</div>
     </div>
-    <div class="card">
+    <div class="card" style="margin-bottom:24px;">
       <h3 style="font-size:16px;margin-bottom:10px;">Récapitulatif mensuel ASV ${year}</h3>
       ${buildRecapTableASV(year)}
+    </div>
+    <div class="card">
+      <h3 style="font-size:16px;margin-bottom:10px;">Heures supplémentaires ASV ${year}</h3>
+      ${buildOvertimeTableASV(year)}
     </div>
   `;
   container.querySelector('#dash-year-toggle').addEventListener('click', (e)=>{
@@ -2499,6 +2723,32 @@ function renderDashboardStats(){
     if(!btn) return;
     dashState.year = parseInt(btn.dataset.year, 10);
     renderDashboardStats();
+  });
+  container.querySelector('#add-asv-btn').onclick = ()=>{
+    const input = container.querySelector('#new-asv-name');
+    const person = addASVPerson(input.value);
+    if(!person){ input.focus(); return; }
+    renderDashboard();
+    showToast(`${person.short} ajoutée`, '➕');
+  };
+  container.querySelector('#new-asv-name').addEventListener('keydown', (e)=>{
+    if(e.key === 'Enter') container.querySelector('#add-asv-btn').click();
+  });
+  container.querySelectorAll('[data-remove-asv]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const id = btn.dataset.removeAsv;
+      const person = personOf(id);
+      openConfirmModal({
+        title:`Retirer ${person.short} ?`,
+        message:`${person.short} n'apparaîtra plus dans les calendriers ni le tableau de bord. Ses données déjà saisies restent enregistrées mais ne seront plus visibles.`,
+        confirmLabel:'Retirer',
+        onConfirm:()=>{
+          removeASVPerson(id);
+          renderDashboard();
+          showToast(`${person.short} retirée`, '🗑️');
+        }
+      });
+    });
   });
 }
 
@@ -2646,7 +2896,8 @@ function buildHeatmap(year, people = PEOPLE){
           : `background:linear-gradient(to bottom, ${colorM} 50%, ${colorAM} 50%);`;
         const hName = holidayName(iso);
         if(hName) style += 'box-shadow:0 0 0 2px var(--color-holiday) inset;';
-        const title = `${formatFR(iso)}${hName?' — '+hName:''} — Matin : ${stateLabel(iso,person.id,'M')} · Après-midi : ${stateLabel(iso,person.id,'AM')}`;
+        const overtime = getOvertimeHours(iso, person.id);
+        const title = `${formatFR(iso)}${hName?' — '+hName:''} — Matin : ${stateLabel(iso,person.id,'M')} · Après-midi : ${stateLabel(iso,person.id,'AM')}${overtime>0?' · +'+formatNum(overtime)+'h sup.':''}`;
         cols += `<td><div class="heatmap-cell" data-date="${iso}" style="${style}" title="${escapeHTML(title)}" tabindex="0" role="button" aria-label="Détail du ${formatFR(iso)}"></div></td>`;
       }
       rows += `<tr><th class="heatmap-row-label" style="color:${person.color}">${person.short}</th>${cols}</tr>`;
@@ -2734,6 +2985,7 @@ function renderAnnualViewForGroup(group){
    16. INITIALISATION GÉNÉRALE
    ================================================================ */
 function init(){
+  loadASVRoster();
   loadPersonColors();
   loadData();
   initNav();
@@ -2742,6 +2994,7 @@ function init(){
   initCalendarInteractions();
   updateDashboardNavBadge();
   switchView('vets');
+  syncFromSupabase();
 }
 document.addEventListener('DOMContentLoaded', init);
 </script>

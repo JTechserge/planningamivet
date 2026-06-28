@@ -1,0 +1,19 @@
+name: Récapitulatif hebdomadaire des congés ASV
+
+on:
+  schedule:
+    - cron: '0 8 * * 1' # tous les lundis à 8h00 UTC
+  workflow_dispatch: {} # bouton "Run workflow" dans l'onglet Actions, pour tester manuellement
+
+jobs:
+  send-recap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Envoyer le récapitulatif par email
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+        run: node scripts/send-weekly-recap.mjs
