@@ -408,6 +408,8 @@ tbody .row-label{border-top:1.5px solid var(--color-border);}
 .gate-box{max-width:360px;width:100%;text-align:center;}
 .gate-box input{width:100%;padding:10px 12px;border:1px solid var(--color-border);border-radius:8px;font-size:14px;margin-top:14px;text-align:center;font-family:inherit;}
 .gate-error{color:#B91C1C;font-size:12.5px;margin-top:8px;}
+.link-button{background:none;border:none;color:var(--color-primary);font-size:12.5px;font-weight:700;cursor:pointer;text-decoration:underline;font-family:inherit;}
+.link-button:disabled{opacity:0.6;cursor:default;}
 
 /* ============================================================
    Tableau de bord
@@ -875,23 +877,37 @@ function openChangePasswordModal(){
   backdrop.classList.add('open');
   const close = ()=> backdrop.classList.remove('open');
   box.querySelector('#modal-cancel').onclick = close;
-  box.querySelector('#pwd-save').onclick = ()=>{
+  box.querySelector('#pwd-save').onclick = async ()=>{
     const cur = box.querySelector('#pwd-current').value;
     const next = box.querySelector('#pwd-new').value;
     const confirmVal = box.querySelector('#pwd-confirm').value;
     const errorEl = box.querySelector('#pwd-error');
+    const saveBtn = box.querySelector('#pwd-save');
     let reason = null;
-    if(cur !== getGatePassword()) reason = 'Mot de passe actuel incorrect.';
-    else if(!next) reason = 'Le nouveau mot de passe ne peut pas être vide.';
+    if(!next) reason = 'Le nouveau mot de passe ne peut pas être vide.';
     else if(next !== confirmVal) reason = 'Les deux mots de passe ne correspondent pas.';
     if(reason){
       errorEl.textContent = reason;
       errorEl.style.display = 'block';
       return;
     }
-    setGatePassword(next);
-    close();
-    showToast('Mot de passe modifié', '🔒');
+    saveBtn.disabled = true;
+    try{
+      const ok = await changeGatePassword(cur, next);
+      if(ok){
+        close();
+        showToast('Mot de passe modifié', '🔒');
+      } else {
+        errorEl.textContent = 'Mot de passe actuel incorrect.';
+        errorEl.style.display = 'block';
+      }
+    }catch(e){
+      errorEl.textContent = 'Connexion impossible. Réessayez plus tard.';
+      errorEl.style.display = 'block';
+      console.warn(e);
+    }finally{
+      saveBtn.disabled = false;
+    }
   };
   backdrop.onclick = (e)=>{ if(e.target===backdrop) close(); };
   box.querySelector('#pwd-current').focus();
@@ -1020,14 +1036,50 @@ const GROUP_VIEWS = {
   asv:  { label:'ASV',          calendarViewKey:'asv-current',  forecastViewKey:'asv-forecast',  calendarContainer:'asv-sub-calendar',  annualContainer:'asv-sub-annual',  forecastContainer:'asv-sub-forecast' },
 };
 
-// Verrou par mot de passe (protection légère, côté client) des onglets sensibles.
+// Verrou par mot de passe (protection légère) des onglets sensibles. Le mot de passe
+// lui-même n'existe nulle part dans ce code source (public sur GitHub) : il est stocké
+// sous forme de hash dans Supabase, vérifié via des fonctions RPC qui ne renvoient que
+// vrai/faux (voir supabase-schema-3-password-security.sql).
 const GATED_VIEWS = ['dashboard'];
-const PASSWORD_KEY = 'amivet_gate_password';
-const DEFAULT_GATE_PASSWORD = 'David&Stéphane26!';
 const UNLOCK_SESSION_KEY = 'amivet_gate_unlocked_at';
 const GATE_DURATION_MS = 30*60*1000; // 30 minutes
-function getGatePassword(){ return localStorage.getItem(PASSWORD_KEY) || DEFAULT_GATE_PASSWORD; }
-function setGatePassword(pwd){ localStorage.setItem(PASSWORD_KEY, pwd); }
+async function verifyGatePassword(input){
+  const res = await fetch(`${SUPABASE_URL}rpc/verify_gate_password`, {
+    method:'POST',
+    headers: supabaseHeaders({ 'Content-Type':'application/json' }),
+    body: JSON.stringify({ input }),
+  });
+  if(!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+async function changeGatePassword(currentPassword, newPassword){
+  const res = await fetch(`${SUPABASE_URL}rpc/change_gate_password`, {
+    method:'POST',
+    headers: supabaseHeaders({ 'Content-Type':'application/json' }),
+    body: JSON.stringify({ current_password:currentPassword, new_password:newPassword }),
+  });
+  if(!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+async function requestPasswordReset(){
+  const token = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + GATE_DURATION_MS).toISOString();
+  const res = await fetch(`${SUPABASE_URL}rpc/request_password_reset`, {
+    method:'POST',
+    headers: supabaseHeaders({ 'Content-Type':'application/json' }),
+    body: JSON.stringify({ token, expires_at:expiresAt }),
+  });
+  if(!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+async function completePasswordReset(token, newPassword){
+  const res = await fetch(`${SUPABASE_URL}rpc/complete_password_reset`, {
+    method:'POST',
+    headers: supabaseHeaders({ 'Content-Type':'application/json' }),
+    body: JSON.stringify({ in_token:token, new_password:newPassword }),
+  });
+  if(!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
 function isGateUnlocked(){
   const t = parseInt(sessionStorage.getItem(UNLOCK_SESSION_KEY) || '0', 10);
   return t > 0 && (Date.now() - t) < GATE_DURATION_MS;
@@ -1575,23 +1627,108 @@ function renderPasswordGate(containerId, onUnlock){
         <input type="password" id="gate-password-input" placeholder="Mot de passe" autocomplete="current-password">
         <p id="gate-error" class="gate-error hidden">Mot de passe incorrect.</p>
         <button class="btn btn-primary" id="gate-submit" style="width:100%;justify-content:center;margin-top:14px;">Déverrouiller</button>
+        <button type="button" id="gate-forgot-link" class="link-button" style="margin-top:12px;">Mot de passe oublié ?</button>
       </div>
     </div>
   `;
   const input = container.querySelector('#gate-password-input');
-  const submit = ()=>{
-    if(input.value === getGatePassword()){
-      unlockGate();
-      onUnlock();
-    } else {
-      container.querySelector('#gate-error').classList.remove('hidden');
+  const errorEl = container.querySelector('#gate-error');
+  const submitBtn = container.querySelector('#gate-submit');
+  const submit = async ()=>{
+    submitBtn.disabled = true;
+    try{
+      const ok = await verifyGatePassword(input.value);
+      if(ok){
+        unlockGate();
+        onUnlock();
+        return;
+      }
+      errorEl.textContent = 'Mot de passe incorrect.';
+      errorEl.classList.remove('hidden');
       input.value = '';
       input.focus();
+    }catch(e){
+      errorEl.textContent = 'Connexion impossible. Réessayez plus tard.';
+      errorEl.classList.remove('hidden');
+      console.warn(e);
+    }finally{
+      submitBtn.disabled = false;
     }
   };
-  container.querySelector('#gate-submit').onclick = submit;
+  submitBtn.onclick = submit;
   input.addEventListener('keydown', (e)=>{ if(e.key === 'Enter') submit(); });
   input.focus();
+  container.querySelector('#gate-forgot-link').onclick = async ()=>{
+    const forgotBtn = container.querySelector('#gate-forgot-link');
+    forgotBtn.disabled = true;
+    try{
+      await requestPasswordReset();
+      container.querySelector('.gate-box').innerHTML = `
+        <h2 class="section-title">📧 Email envoyé</h2>
+        <p class="section-desc">Un lien de réinitialisation a été envoyé à l'adresse email configurée pour les notifications de la clinique. Cela peut prendre quelques minutes à arriver.</p>
+      `;
+    }catch(e){
+      errorEl.textContent = 'Impossible d\'envoyer la demande. Réessayez plus tard.';
+      errorEl.classList.remove('hidden');
+      forgotBtn.disabled = false;
+      console.warn(e);
+    }
+  };
+}
+
+// Page plein écran dédiée, affichée quand l'URL contient ?reset=<token> (lien reçu par
+// email). Remplace tout le contenu de la page tant que la réinitialisation n'est pas
+// terminée — volontairement séparée du reste de la navigation.
+function renderPasswordResetPage(token){
+  document.body.innerHTML = `
+    <div class="gate-wrap">
+      <div class="gate-box card" id="reset-box">
+        <h2 class="section-title">🔑 Réinitialiser le mot de passe</h2>
+        <p class="section-desc">Choisissez un nouveau mot de passe pour l'onglet Tableau de bord.</p>
+        <input type="password" id="reset-new-input" placeholder="Nouveau mot de passe" autocomplete="new-password">
+        <input type="password" id="reset-confirm-input" placeholder="Confirmer le mot de passe" autocomplete="new-password" style="margin-top:10px;">
+        <p id="reset-error" class="gate-error hidden"></p>
+        <button class="btn btn-primary" id="reset-submit" style="width:100%;justify-content:center;margin-top:14px;">Réinitialiser</button>
+      </div>
+    </div>
+  `;
+  const errorEl = document.getElementById('reset-error');
+  const submitBtn = document.getElementById('reset-submit');
+  submitBtn.onclick = async ()=>{
+    const next = document.getElementById('reset-new-input').value;
+    const confirmVal = document.getElementById('reset-confirm-input').value;
+    let reason = '';
+    if(!next) reason = 'Le nouveau mot de passe ne peut pas être vide.';
+    else if(next !== confirmVal) reason = 'Les deux mots de passe ne correspondent pas.';
+    if(reason){
+      errorEl.textContent = reason;
+      errorEl.classList.remove('hidden');
+      return;
+    }
+    submitBtn.disabled = true;
+    try{
+      const ok = await completePasswordReset(token, next);
+      if(ok){
+        document.getElementById('reset-box').innerHTML = `
+          <h2 class="section-title">✅ Mot de passe mis à jour</h2>
+          <p class="section-desc">Vous pouvez maintenant retourner sur le site et vous connecter avec ce nouveau mot de passe.</p>
+          <button class="btn btn-primary" id="reset-goto-app" style="width:100%;justify-content:center;">Retourner sur le site</button>
+        `;
+        document.getElementById('reset-goto-app').onclick = ()=>{
+          window.location.href = window.location.pathname;
+        };
+      } else {
+        errorEl.textContent = 'Ce lien est invalide ou a expiré. Demandez un nouveau lien depuis l\'écran de connexion.';
+        errorEl.classList.remove('hidden');
+        submitBtn.disabled = false;
+      }
+    }catch(e){
+      errorEl.textContent = 'Connexion impossible. Réessayez plus tard.';
+      errorEl.classList.remove('hidden');
+      submitBtn.disabled = false;
+      console.warn(e);
+    }
+  };
 }
 
 // Sous-pages "Calendrier mensuel" / "Vue annuelle" / "Prévisionnel" au sein d'un onglet
@@ -3183,6 +3320,8 @@ function renderAnnualViewForGroup(group){
    16. INITIALISATION GÉNÉRALE
    ================================================================ */
 function init(){
+  const resetToken = new URLSearchParams(window.location.search).get('reset');
+  if(resetToken){ renderPasswordResetPage(resetToken); return; }
   loadASVRoster();
   loadPersonColors();
   loadData();
