@@ -507,12 +507,13 @@ table.recap-table tfoot td{font-weight:800;border-top:2px solid var(--color-bord
 /* ============================================================
    Impression — ne garde que le calendrier mensuel affiché
    ============================================================ */
+@page{margin:14mm 16mm;}
 @media print{
   .app-header,.sub-nav-row,.legend,.section-desc,.rollover-banner,.forecast-banner,
   .cal-toolbar-actions,.cal-col-tools,#toast-container{display:none!important;}
   .cal-month-nav button{display:none!important;}
   body{background:#fff;}
-  .app-main{padding:0;max-width:none;}
+  .app-main{padding:0 6mm;max-width:none;}
   .card,.cal-table{box-shadow:none;}
 }
 </style>
@@ -2160,7 +2161,10 @@ function clearMonth(viewKey, month, personId){
   const targets = personId ? cfg.people.filter(p=>p.id===personId) : cfg.people;
   for(let day=1; day<=nbDays; day++){
     const iso = fmtISO(new Date(cfg.year, month, day));
-    targets.forEach(p=> SLOTS.forEach(slot=> setSlotState(iso, p.id, slot, 'empty')));
+    targets.forEach(p=>{
+      SLOTS.forEach(slot=> setSlotState(iso, p.id, slot, 'empty'));
+      setOvertimeHours(iso, p.id, 0);
+    });
     if(!personId) setDayComment(iso, '');
   }
   saveData();
@@ -2320,9 +2324,9 @@ function buildPersonRowCells(year, month, days, personId){
         flush();
         const info = cellRenderInfo(iso, personId, slot);
         // Le badge d'heures supplémentaires (jour entier, pas par demi-journée) s'affiche
-        // sur la case du matin, seulement quand elle n'est pas absorbée dans une case
-        // d'absence fusionnée (où il n'y aurait pas de jour précis à désigner).
-        const overtime = slot === 'M' ? getOvertimeHours(iso, personId) : 0;
+        // sur la case de l'après-midi, seulement quand elle n'est pas absorbée dans une
+        // case d'absence fusionnée (où il n'y aurait pas de jour précis à désigner).
+        const overtime = slot === 'AM' ? getOvertimeHours(iso, personId) : 0;
         const otBadge = overtime > 0 ? `<span class="ot-badge" title="Heures supplémentaires : ${formatNum(overtime)}h">+${formatNum(overtime)}h</span>` : '';
         html += `<td class="cal-cell state-${info.stateClass}" style="${info.style}"
           data-date="${iso}" data-person="${personId}" data-slot="${slot}" data-slot-short="${slot==='M'?'M':'A'}"
