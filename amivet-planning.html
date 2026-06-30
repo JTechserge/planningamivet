@@ -1532,6 +1532,8 @@ function setSlotState(isoDate, personId, slot, state){
       // validation vétérinaire (sauf si une décision existait déjà sur cette demi-journée,
       // ex. ré-application du même état pendant un glisser-peindre).
       if(!getLeaveDecision(isoDate, personId, slot)) setLeaveDecision(isoDate, personId, slot, 'pending');
+      // Des heures sup n'ont plus de sens un jour de congé : on les efface automatiquement.
+      setOvertimeHours(isoDate, personId, 0);
     } else if(state !== 'absent' && wasAbsent){
       setLeaveDecision(isoDate, personId, slot, null);
       setLeaveDecisionComment(isoDate, personId, slot, '');
