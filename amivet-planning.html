@@ -552,6 +552,9 @@ table.recap-table tfoot td{font-weight:800;border-top:2px solid var(--color-bord
             <div class="settings-section-label">Notifications</div>
             <button id="action-email-settings" role="menuitem">📧 Email récapitulatif des congés</button>
             <hr>
+            <div class="settings-section-label">Synchronisation</div>
+            <button id="action-calendar-sync" role="menuitem">📅 Synchronisation calendrier</button>
+            <hr>
             <div class="settings-section-label">Données</div>
             <button id="action-export" role="menuitem">⬇️ Exporter JSON</button>
             <button id="action-import" role="menuitem">⬆️ Importer JSON</button>
@@ -1019,6 +1022,112 @@ function openEmailSettingsModal(){
     console.warn(e);
   });
 }
+
+// Synchronisation calendrier (lien d'abonnement ICS) : chaque vétérinaire active/désactive
+// la sienne indépendamment depuis ce même panneau, pas d'identité par compte sur ce site —
+// comme pour le reste de l'app, c'est une protection légère basée sur le lien lui-même.
+// CALENDAR_FEED_URL est défini plus bas, juste après SUPABASE_FUNCTIONS_URL (section
+// Persistance) — les fonctions ci-dessous ne le lisent qu'au moment de l'appel, jamais
+// pendant le chargement initial du script, donc l'ordre des déclarations n'a pas d'impact.
+async function getCalendarSyncStatus(personId){
+  const res = await fetch(`${SUPABASE_URL}rpc/get_calendar_sync_status`, {
+    method:'POST',
+    headers: supabaseHeaders({ 'Content-Type':'application/json' }),
+    body: JSON.stringify({ p_person_id: personId }),
+  });
+  if(!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+async function generateCalendarSyncToken(personId){
+  const res = await fetch(`${SUPABASE_URL}rpc/generate_calendar_sync_token`, {
+    method:'POST',
+    headers: supabaseHeaders({ 'Content-Type':'application/json' }),
+    body: JSON.stringify({ p_person_id: personId }),
+  });
+  if(!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+async function revokeCalendarSyncToken(personId){
+  const res = await fetch(`${SUPABASE_URL}rpc/revoke_calendar_sync_token`, {
+    method:'POST',
+    headers: supabaseHeaders({ 'Content-Type':'application/json' }),
+    body: JSON.stringify({ p_person_id: personId }),
+  });
+  if(!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+function calendarSyncPersonBlockHtml(person){
+  return `
+    <div class="card" style="margin-bottom:12px;padding:14px 16px;" id="cal-sync-block-${person.id}">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+        <span style="font-size:13.5px;font-weight:700;color:${person.color};">${escapeHTML(person.short)}</span>
+        <span class="text-muted" id="cal-sync-status-${person.id}" style="font-size:12px;">Chargement…</span>
+      </div>
+      <div id="cal-sync-body-${person.id}" style="margin-top:10px;"></div>
+    </div>
+  `;
+}
+function renderCalendarSyncPersonBody(box, person, active, link){
+  const statusEl = box.querySelector(`#cal-sync-status-${person.id}`);
+  statusEl.textContent = active ? '✅ Active' : '⬜ Non activée';
+  const bodyEl = box.querySelector(`#cal-sync-body-${person.id}`);
+  if(active){
+    bodyEl.innerHTML = `
+      <input type="text" readonly value="${escapeHTML(link)}" style="width:100%;padding:8px 10px;border:1px solid var(--color-border);border-radius:6px;font-size:11.5px;font-family:inherit;margin-bottom:8px;" onclick="this.select();">
+      <div class="flex gap-2">
+        <button type="button" class="btn" data-copy-link style="flex:1;justify-content:center;font-size:12.5px;">Copier le lien</button>
+        <button type="button" class="btn" data-revoke style="flex:1;justify-content:center;font-size:12.5px;color:#B91C1C;border-color:#FCA5A5;">Désactiver</button>
+      </div>
+    `;
+    bodyEl.querySelector('[data-copy-link]').onclick = ()=>{
+      navigator.clipboard?.writeText(link);
+      showToast('Lien copié', '📋');
+    };
+    bodyEl.querySelector('[data-revoke]').onclick = async ()=>{
+      await revokeCalendarSyncToken(person.id);
+      renderCalendarSyncPersonBody(box, person, false, '');
+      showToast(`Synchronisation de ${person.short} désactivée`, '📅');
+    };
+  } else {
+    bodyEl.innerHTML = `<button type="button" class="btn btn-primary" data-generate style="width:100%;justify-content:center;font-size:12.5px;">Générer mon lien</button>`;
+    bodyEl.querySelector('[data-generate]').onclick = async ()=>{
+      const token = await generateCalendarSyncToken(person.id);
+      const newLink = `${CALENDAR_FEED_URL}?person=${person.id}&token=${token}`;
+      renderCalendarSyncPersonBody(box, person, true, newLink);
+      showToast(`Lien généré pour ${person.short}`, '📅');
+    };
+  }
+}
+function openCalendarSyncModal(){
+  const backdrop = document.getElementById('modal-backdrop');
+  const box = document.getElementById('modal-box');
+  box.innerHTML = `
+    <h3>📅 Synchronisation calendrier</h3>
+    <p>Chaque vétérinaire peut abonner son calendrier iPhone ou Android à son planning Amivet. Une fois le lien ajouté, la mise à jour est automatique (toutes les quelques heures, gérée par le téléphone) — sens unique du planning vers le téléphone.</p>
+    ${PEOPLE.map(p=> calendarSyncPersonBlockHtml(p)).join('')}
+    <p class="text-muted" style="font-size:11.5px;line-height:1.6;margin-top:14px;">
+      <strong>iPhone :</strong> ouvrez le lien copié dans Safari, ou Réglages → Calendrier → Comptes → Ajouter un compte → Autre → Ajouter un calendrier en abonnement.<br>
+      <strong>Android :</strong> sur calendar.google.com (ordinateur), "Autres agendas" → "À partir de l'URL", collez le lien — il apparaît ensuite automatiquement sur le téléphone via le compte Google synchronisé.
+    </p>
+    <div class="modal-actions" style="margin-top:16px;">
+      <button class="btn" id="modal-cancel">Fermer</button>
+    </div>
+  `;
+  backdrop.classList.add('open');
+  const close = ()=> backdrop.classList.remove('open');
+  box.querySelector('#modal-cancel').onclick = close;
+  backdrop.onclick = (e)=>{ if(e.target===backdrop) close(); };
+
+  PEOPLE.forEach(person=>{
+    getCalendarSyncStatus(person.id).then(token=>{
+      const link = token ? `${CALENDAR_FEED_URL}?person=${person.id}&token=${token}` : '';
+      renderCalendarSyncPersonBody(box, person, !!token, link);
+    }).catch(e=>{
+      box.querySelector(`#cal-sync-status-${person.id}`).textContent = 'Connexion impossible';
+      console.warn(e);
+    });
+  });
+}
+
 const MONTH_NAMES = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
 const MONTH_SHORT = ['Janv','Févr','Mars','Avr','Mai','Juin','Juil','Août','Sept','Oct','Nov','Déc'];
 const WEEKDAY_NAMES = ['Lu','Ma','Me','Je','Ve','Sa','Di']; // lundi = 0
@@ -1244,6 +1353,7 @@ function isSaturday(date){ return isoWeekday(date) === 5; }
 // faite pour être embarquée dans du code client visible publiquement.
 const SUPABASE_URL = 'https://ubowqtowyqmpraoxbaoo.supabase.co/rest/v1/';
 const SUPABASE_FUNCTIONS_URL = 'https://ubowqtowyqmpraoxbaoo.supabase.co/functions/v1/';
+const CALENDAR_FEED_URL = `${SUPABASE_FUNCTIONS_URL}calendar-feed`;
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVib3dxdG93eXFtcHJhb3hiYW9vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2MzkzNjksImV4cCI6MjA5ODIxNTM2OX0.cC7vTWrK-Ykii5dtlg_6lA5quHe6rv78IRxZT-ArV_8';
 function supabaseHeaders(extra){
   return Object.assign({ apikey:SUPABASE_ANON_KEY, Authorization:`Bearer ${SUPABASE_ANON_KEY}` }, extra || {});
@@ -1527,6 +1637,11 @@ function initSettingsMenu(){
   document.getElementById('action-email-settings').addEventListener('click', ()=>{
     menu.classList.remove('open');
     openEmailSettingsModal();
+  });
+
+  document.getElementById('action-calendar-sync').addEventListener('click', ()=>{
+    menu.classList.remove('open');
+    openCalendarSyncModal();
   });
 
   document.getElementById('action-export').addEventListener('click', ()=>{
@@ -3045,7 +3160,8 @@ function renderDashboardStats(){
       <div class="chart-wrap">${buildBarChartSVG(year)}</div>
     </div>
     <div class="card" style="margin-bottom:24px;">
-      <h3 style="font-size:16px;margin-bottom:10px;">Récapitulatif mensuel ${year}</h3>
+      <h3 style="font-size:16px;margin-bottom:2px;">Récapitulatif mensuel ${year}</h3>
+      <p class="text-muted" style="font-size:11.5px;margin-bottom:10px;">Écart = nombre de jours travaillés en plus, pour le vétérinaire concerné</p>
       ${buildRecapTable(year)}
     </div>
 
