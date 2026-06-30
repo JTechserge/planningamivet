@@ -131,6 +131,7 @@ body.forecast-theme{background:var(--color-forecast);}
   background:var(--color-surface);color:var(--color-text);border-color:var(--color-border);
 }
 .btn:hover{box-shadow:var(--shadow-sm);transform:translateY(-1px);}
+.btn:disabled{opacity:0.55;cursor:not-allowed;transform:none;box-shadow:none;}
 .btn:active{transform:translateY(0);}
 .btn-primary{background:var(--color-primary);color:#fff;border-color:var(--color-primary);}
 .btn-primary:hover{background:var(--color-primary-light);border-color:var(--color-primary-light);}
@@ -385,7 +386,12 @@ tbody .row-label{border-top:1.5px solid var(--color-border);}
   display:none;align-items:center;justify-content:center;
 }
 .modal-backdrop.open{display:flex;}
-.modal-box{background:#fff;border-radius:var(--radius-card);box-shadow:var(--shadow-lg);padding:24px;width:380px;}
+.modal-box{
+  background:#fff;border-radius:var(--radius-card);box-shadow:var(--shadow-lg);padding:24px;width:380px;
+  max-height:calc(100vh - 64px);overflow-y:auto;
+}
+.modal-box.modal-box-wide{width:680px;max-width:calc(100vw - 48px);}
+.cal-sync-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:4px;}
 .modal-box h3{font-size:16px;margin-bottom:8px;}
 .modal-box p{font-size:13px;color:var(--color-text-muted);margin-bottom:18px;}
 .modal-box input[type=password],.modal-box input[type=text],.modal-box input[type=email]{
@@ -430,6 +436,12 @@ tbody .row-label{border-top:1.5px solid var(--color-border);}
 .asv-remove-btn:hover{background:var(--color-absent);color:var(--color-absent-text);}
 .signature-panel-rows{display:flex;flex-direction:column;gap:10px;}
 .signature-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:13px;}
+.signed-pill{
+  display:inline-flex;align-items:center;gap:7px;
+  background:var(--color-secondary);color:var(--color-primary);
+  padding:4px 6px 4px 10px;border-radius:999px;font-size:12px;font-weight:700;
+}
+.signed-pill .signed-pill-date{font-weight:500;color:var(--color-text-muted);}
 .person-card[data-person="david"]{border-top-color:var(--color-david);}
 .person-card[data-person="stephane"]{border-top-color:var(--color-stephane);}
 .person-card-head{display:flex;align-items:center;gap:10px;margin-bottom:16px;}
@@ -512,6 +524,7 @@ table.recap-table tfoot td{font-weight:800;border-top:2px solid var(--color-bord
    Impression — ne garde que le calendrier mensuel affiché
    ============================================================ */
 @page{margin:14mm 16mm;}
+.print-signature-status{display:none;}
 @media print{
   .app-header,.sub-nav-row,.legend,.section-desc,.rollover-banner,.forecast-banner,
   .cal-toolbar-actions,.cal-col-tools,#toast-container,.signature-panel{display:none!important;}
@@ -519,6 +532,10 @@ table.recap-table tfoot td{font-weight:800;border-top:2px solid var(--color-bord
   body{background:#fff;}
   .app-main{padding:0 6mm;max-width:none;}
   .card,.cal-table{box-shadow:none;}
+  .print-signature-status{
+    display:block;font-size:11px;color:#334155;margin:4px 0 10px;padding-top:4px;
+    border-top:1px solid #CBD5E1;
+  }
 }
 </style>
 </head>
@@ -806,6 +823,7 @@ function colorPickerRow(p){
 function openColorPickerModal(){
   const backdrop = document.getElementById('modal-backdrop');
   const box = document.getElementById('modal-box');
+  box.className = 'modal-box';
   box.innerHTML = `
     <h3>🎨 Couleurs des associés et des ASV</h3>
     <p>Le vert, le rouge, le bleu foncé, le jaune et le blanc restent réservés aux indicateurs de statut (présent / congé validé / congé en attente / férié / vide).</p>
@@ -868,6 +886,7 @@ function openColorPickerModal(){
 function openChangePasswordModal(){
   const backdrop = document.getElementById('modal-backdrop');
   const box = document.getElementById('modal-box');
+  box.className = 'modal-box';
   box.innerHTML = `
     <h3>🔒 Modifier le mot de passe</h3>
     <p>Protège l'accès aux onglets Vétérinaires et Tableau de bord.</p>
@@ -939,6 +958,7 @@ async function fetchEmailSettings(){
 function openEmailSettingsModal(){
   const backdrop = document.getElementById('modal-backdrop');
   const box = document.getElementById('modal-box');
+  box.className = 'modal-box';
   box.innerHTML = `
     <h3>📧 Email récapitulatif des congés</h3>
     <p>Envoyé automatiquement à la clinique avec les demandes de congé ASV en attente, selon la fréquence choisie.</p>
@@ -1074,7 +1094,7 @@ async function updateCalendarSyncPreferences(personId, syncPresence, syncAbsence
 }
 function calendarSyncPersonBlockHtml(person){
   return `
-    <div class="card" style="margin-bottom:12px;padding:14px 16px;" id="cal-sync-block-${person.id}">
+    <div class="card" style="padding:14px 16px;" id="cal-sync-block-${person.id}">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
         <span style="font-size:13.5px;font-weight:700;color:${person.color};">${escapeHTML(person.short)}</span>
         <span class="text-muted" id="cal-sync-status-${person.id}" style="font-size:12px;">Chargement…</span>
@@ -1162,10 +1182,11 @@ function renderCalendarSyncPersonBody(box, person, status, link){
 function openCalendarSyncModal(){
   const backdrop = document.getElementById('modal-backdrop');
   const box = document.getElementById('modal-box');
+  box.className = 'modal-box modal-box-wide';
   box.innerHTML = `
     <h3>📅 Synchronisation calendrier</h3>
     <p>Chaque vétérinaire peut abonner son calendrier iPhone ou Android à son planning Amivet. Une fois le lien ajouté, la mise à jour est automatique (toutes les quelques heures, gérée par le téléphone) — sens unique du planning vers le téléphone.</p>
-    ${PEOPLE.map(p=> calendarSyncPersonBlockHtml(p)).join('')}
+    <div class="cal-sync-grid">${PEOPLE.map(p=> calendarSyncPersonBlockHtml(p)).join('')}</div>
     <p class="text-muted" style="font-size:11.5px;line-height:1.6;margin-top:14px;">
       <strong>iPhone :</strong> ouvrez le lien copié dans Safari, ou Réglages → Calendrier → Comptes → Ajouter un compte → Autre → Ajouter un calendrier en abonnement. La couleur choisie est reprise automatiquement.<br>
       <strong>Android :</strong> sur calendar.google.com (ordinateur), "Autres agendas" → "À partir de l'URL", collez le lien — il apparaît ensuite automatiquement sur le téléphone via le compte Google synchronisé. Google ne reprend pas toujours la couleur choisie ici : vous pouvez la réajuster vous-même dans Google Agenda si besoin.
@@ -1696,6 +1717,7 @@ function showSavedToast(){ showToast('Sauvegardé'); }
 function openConfirmModal({title, message, confirmLabel='Confirmer', danger=true, onConfirm}){
   const backdrop = document.getElementById('modal-backdrop');
   const box = document.getElementById('modal-box');
+  box.className = 'modal-box';
   box.innerHTML = `
     <h3>${title}</h3>
     <p>${message}</p>
@@ -2229,6 +2251,7 @@ function openClearMonthModal(viewKey, month){
   const label = `${MONTH_NAMES[month]} ${cfg.year}`;
   const backdrop = document.getElementById('modal-backdrop');
   const box = document.getElementById('modal-box');
+  box.className = 'modal-box';
   const allLabel = cfg.people.map(p=>p.short).join(' + ');
   box.innerHTML = `
     <h3>Vider ${label} ?</h3>
@@ -2531,18 +2554,36 @@ function buildSignaturePanelHtml(viewKey){
       <div class="signature-panel-rows">
         ${cfg.people.map(p=>{
           const detail = getSignatureDetail(p.id, cfg.year, month);
-          if(detail){
-            const signedDate = new Date(detail.signedAt).toLocaleDateString('fr-FR', { day:'numeric', month:'long', year:'numeric' });
-            return `<div class="signature-row"><span style="color:${p.color};font-weight:700;">${escapeHTML(p.short)}</span>
-              <span class="text-muted" style="font-size:12.5px;">✅ Signé par ${escapeHTML(detail.signedName)} le ${signedDate}</span></div>`;
-          }
-          return `<div class="signature-row"><span style="color:${p.color};font-weight:700;">${escapeHTML(p.short)}</span>
-            <button type="button" class="btn" data-sign-person="${p.id}" style="font-size:12.5px;padding:6px 12px;">Signer ma feuille de présence</button></div>`;
+          const signedNote = detail
+            ? (()=>{
+                const signedDate = new Date(detail.signedAt).toLocaleDateString('fr-FR', { day:'numeric', month:'long', year:'numeric' });
+                return `<span class="text-muted" style="font-size:12.5px;">✅ Signé par ${escapeHTML(detail.signedName)} le ${signedDate}</span>`;
+              })()
+            : '';
+          return `<div class="signature-row">
+            <span style="color:${p.color};font-weight:700;">${escapeHTML(p.short)}</span>
+            ${signedNote}
+            <button type="button" class="btn" data-sign-person="${p.id}" style="font-size:12.5px;padding:6px 12px;" ${detail?'disabled title="Déjà signé — verrouillé"':''}>Signer ma feuille de présence</button>
+          </div>`;
         }).join('')}
       </div>
       <p class="text-muted" style="font-size:11px;margin-top:10px;">Une fois signé, le mois est verrouillé pour la personne concernée. Un vétérinaire peut annuler une signature depuis le Tableau de bord si une correction est nécessaire.</p>
     </div>
   `;
+}
+// Ligne visible uniquement à l'impression (la version écran a déjà le 🔒 dans l'en-tête de
+// ligne, mais sur papier ce repère seul ne suffit pas à prouver qui a signé et quand).
+function buildPrintSignatureStatusHtml(viewKey){
+  const cfg = CAL_VIEWS[viewKey];
+  if(viewKey !== 'asv-current') return '';
+  const month = cfg.navState.month;
+  const parts = cfg.people.map(p=>{
+    const detail = getSignatureDetail(p.id, cfg.year, month);
+    if(!detail) return `${escapeHTML(p.short)} : non signé`;
+    const signedDate = new Date(detail.signedAt).toLocaleDateString('fr-FR', { day:'numeric', month:'long', year:'numeric' });
+    return `${escapeHTML(p.short)} : signé par ${escapeHTML(detail.signedName)} le ${signedDate}`;
+  });
+  return `<p class="print-signature-status">✍️ ${parts.join('&nbsp;&nbsp;—&nbsp;&nbsp;')}</p>`;
 }
 function openSignMonthModal(viewKey, personId){
   const cfg = CAL_VIEWS[viewKey];
@@ -2551,6 +2592,7 @@ function openSignMonthModal(viewKey, personId){
   const monthLabel = `${MONTH_NAMES[month]} ${cfg.year}`;
   const backdrop = document.getElementById('modal-backdrop');
   const box = document.getElementById('modal-box');
+  box.className = 'modal-box';
   box.innerHTML = `
     <h3>✍️ Signer la feuille de présence</h3>
     <p>${escapeHTML(person.short)} certifie que les informations de présence pour <strong>${monthLabel}</strong> sont exactes. Une fois signé, ce mois sera verrouillé.</p>
@@ -2602,6 +2644,7 @@ function renderCalendarView(viewKey){
     <p class="section-desc">Cliquez sur une cellule pour faire défiler Vide → Présent → Absent. Clic droit (ou appui long) sur une cellule pour saisir un motif d'absence.</p>
     ${buildCalendarToolbar(viewKey)}
     ${buildCalendarGrid(viewKey)}
+    ${buildPrintSignatureStatusHtml(viewKey)}
     ${buildLegend(cfg.people)}
     ${buildSignaturePanelHtml(viewKey)}
   `;
@@ -3317,8 +3360,12 @@ function buildSignaturesTableASV(year){
       const detail = getSignatureDetail(p.id, year, m);
       if(!detail) return '<td class="text-muted">—</td>';
       const signedDate = new Date(detail.signedAt).toLocaleDateString('fr-FR', { day:'numeric', month:'short' });
-      return `<td>✅ ${escapeHTML(detail.signedName)} (${signedDate})
-        <button type="button" class="asv-remove-btn" data-revoke-signature="${p.id}|${year}|${m}" title="Annuler cette signature" aria-label="Annuler cette signature">✕</button></td>`;
+      return `<td>
+        <span class="signed-pill">
+          ✅ ${escapeHTML(detail.signedName)} <span class="signed-pill-date">(${signedDate})</span>
+          <button type="button" class="asv-remove-btn" data-revoke-signature="${p.id}|${year}|${m}" title="Annuler cette signature" aria-label="Annuler cette signature">✕</button>
+        </span>
+      </td>`;
     });
     rows += `<tr><td>${MONTH_NAMES[m]}</td>${cells.join('')}</tr>`;
   }
@@ -3341,11 +3388,13 @@ function renderDashboard(){
       <div class="sub-nav" id="dash-sub-nav">
         <button class="sub-tab ${dashSubState.tab==='stats'?'active':''}" data-sub="stats">📊 Statistiques</button>
         <button class="sub-tab ${dashSubState.tab==='requests'?'active':''}" data-sub="requests">📋 Demandes de congé${pendingCount>0?` <span class="nav-badge">${pendingCount}</span>`:''}</button>
+        <button class="sub-tab ${dashSubState.tab==='signatures'?'active':''}" data-sub="signatures">✍️ Feuilles signées</button>
       </div>
       <button class="btn-icon lock-now-btn" title="Verrouiller maintenant" aria-label="Verrouiller maintenant">🔒</button>
     </div>
     <div id="dash-sub-stats" class="sub-page ${dashSubState.tab!=='stats'?'hidden':''}"></div>
     <div id="dash-sub-requests" class="sub-page ${dashSubState.tab!=='requests'?'hidden':''}"></div>
+    <div id="dash-sub-signatures" class="sub-page ${dashSubState.tab!=='signatures'?'hidden':''}"></div>
   `;
   container.querySelector('#dash-sub-nav').addEventListener('click', (e)=>{
     const btn = e.target.closest('.sub-tab');
@@ -3354,7 +3403,9 @@ function renderDashboard(){
     renderDashboard();
     saveViewState();
   });
-  if(dashSubState.tab === 'stats') renderDashboardStats(); else renderLeaveRequestsPage();
+  if(dashSubState.tab === 'stats') renderDashboardStats();
+  else if(dashSubState.tab === 'signatures') renderDashboardSignatures();
+  else renderLeaveRequestsPage();
 }
 VIEW_RENDERERS['dashboard'] = renderDashboard;
 
@@ -3421,26 +3472,7 @@ function renderDashboardStats(){
       <h3 style="font-size:16px;margin-bottom:10px;">Heures supplémentaires ASV ${year}</h3>
       ${buildOvertimeTableASV(year)}
     </div>
-    <div class="card" id="dash-signatures-card">
-      <h3 style="font-size:16px;margin-bottom:10px;">Feuilles de présence signées ${year}</h3>
-      ${buildSignaturesTableASV(year)}
-    </div>
   `;
-  container.querySelectorAll('[data-revoke-signature]').forEach(btn=>{
-    btn.onclick = async ()=>{
-      const [personId, y, m] = btn.dataset.revokeSignature.split('|');
-      openConfirmModal({
-        title: 'Annuler cette signature ?',
-        message: `Le mois redeviendra modifiable pour ${personOf(personId).short}.`,
-        confirmLabel: 'Annuler la signature',
-        onConfirm: async ()=>{
-          await revokeSignature(personId, parseInt(y,10), parseInt(m,10));
-          renderDashboardStats();
-          showToast('Signature annulée', '🔓');
-        },
-      });
-    };
-  });
   container.querySelector('#dash-year-toggle').addEventListener('click', (e)=>{
     const btn = e.target.closest('button');
     if(!btn) return;
@@ -3472,6 +3504,46 @@ function renderDashboardStats(){
         }
       });
     });
+  });
+}
+
+// --- Sous-page "Feuilles signées" : récapitulatif annuel des signatures ASV, avec
+// annulation possible (rouvre le mois correspondant pour la personne concernée). ---
+function renderDashboardSignatures(){
+  const container = document.getElementById('dash-sub-signatures');
+  const year = dashState.year;
+  const cy = getCurrentYear();
+  container.innerHTML = `
+    <div class="year-toggle" id="dash-sig-year-toggle">
+      <button data-year="${cy}" class="${year===cy?'active':''}">${cy}</button>
+      <button data-year="${cy+1}" class="${year===cy+1?'active':''}">${cy+1}</button>
+    </div>
+    <div class="card" style="margin-top:18px;">
+      <h3 style="font-size:16px;margin-bottom:4px;">Feuilles de présence signées ${year}</h3>
+      <p class="text-muted" style="font-size:12.5px;margin-bottom:10px;">Suivi des signatures électroniques mensuelles des ASV.</p>
+      ${buildSignaturesTableASV(year)}
+    </div>
+  `;
+  container.querySelectorAll('[data-revoke-signature]').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const [personId, y, m] = btn.dataset.revokeSignature.split('|');
+      openConfirmModal({
+        title: 'Annuler cette signature ?',
+        message: `Le mois redeviendra modifiable pour ${personOf(personId).short}.`,
+        confirmLabel: 'Annuler la signature',
+        onConfirm: async ()=>{
+          await revokeSignature(personId, parseInt(y,10), parseInt(m,10));
+          renderDashboardSignatures();
+          showToast('Signature annulée', '🔓');
+        },
+      });
+    };
+  });
+  container.querySelector('#dash-sig-year-toggle').addEventListener('click', (e)=>{
+    const btn = e.target.closest('button');
+    if(!btn) return;
+    dashState.year = parseInt(btn.dataset.year, 10);
+    renderDashboardSignatures();
   });
 }
 
