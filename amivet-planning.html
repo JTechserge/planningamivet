@@ -1025,10 +1025,13 @@ function openEmailSettingsModal(){
 
 // Synchronisation calendrier (lien d'abonnement ICS) : chaque vétérinaire active/désactive
 // la sienne indépendamment depuis ce même panneau, pas d'identité par compte sur ce site —
-// comme pour le reste de l'app, c'est une protection légère basée sur le lien lui-même.
-// CALENDAR_FEED_URL est défini plus bas, juste après SUPABASE_FUNCTIONS_URL (section
-// Persistance) — les fonctions ci-dessous ne le lisent qu'au moment de l'appel, jamais
-// pendant le chargement initial du script, donc l'ordre des déclarations n'a pas d'impact.
+// comme pour le reste de l'app, c'est une protection légère basée sur le lien lui-même. Le
+// même lien peut être ajouté à plusieurs téléphones/comptes ; le désactiver coupe l'accès
+// pour tous d'un coup. CALENDAR_FEED_URL est défini plus bas, juste après
+// SUPABASE_FUNCTIONS_URL (section Persistance) — les fonctions ci-dessous ne le lisent
+// qu'au moment de l'appel, jamais pendant le chargement initial du script, donc l'ordre
+// des déclarations n'a pas d'impact.
+const CALENDAR_SYNC_COLORS = ['#0F766E','#2563EB','#7C3AED','#DC2626','#16A34A','#EA580C'];
 async function getCalendarSyncStatus(personId){
   const res = await fetch(`${SUPABASE_URL}rpc/get_calendar_sync_status`, {
     method:'POST',
@@ -1036,7 +1039,8 @@ async function getCalendarSyncStatus(personId){
     body: JSON.stringify({ p_person_id: personId }),
   });
   if(!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  const rows = await res.json();
+  return rows[0] || { token:null, sync_presence:true, sync_absences:true, color:CALENDAR_SYNC_COLORS[0] };
 }
 async function generateCalendarSyncToken(personId){
   const res = await fetch(`${SUPABASE_URL}rpc/generate_calendar_sync_token`, {
@@ -1055,6 +1059,14 @@ async function revokeCalendarSyncToken(personId){
   });
   if(!res.ok) throw new Error(`HTTP ${res.status}`);
 }
+async function updateCalendarSyncPreferences(personId, syncPresence, syncAbsences, color){
+  const res = await fetch(`${SUPABASE_URL}rpc/update_calendar_sync_preferences`, {
+    method:'POST',
+    headers: supabaseHeaders({ 'Content-Type':'application/json' }),
+    body: JSON.stringify({ p_person_id: personId, p_sync_presence: syncPresence, p_sync_absences: syncAbsences, p_color: color }),
+  });
+  if(!res.ok) throw new Error(`HTTP ${res.status}`);
+}
 function calendarSyncPersonBlockHtml(person){
   return `
     <div class="card" style="margin-bottom:12px;padding:14px 16px;" id="cal-sync-block-${person.id}">
@@ -1066,33 +1078,78 @@ function calendarSyncPersonBlockHtml(person){
     </div>
   `;
 }
-function renderCalendarSyncPersonBody(box, person, active, link){
+function calendarSyncPreferencesHtml(person, status){
+  return `
+    <div style="margin-bottom:10px;">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;margin-bottom:4px;">
+        <input type="checkbox" data-pref-presence ${status.sync_presence?'checked':''}> Jours de présence
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;margin-bottom:8px;">
+        <input type="checkbox" data-pref-absences ${status.sync_absences?'checked':''}> Jours d'absence
+      </label>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+        ${CALENDAR_SYNC_COLORS.map(c=>`
+          <button type="button" data-pref-color="${c}" aria-label="Couleur ${c}"
+            style="width:20px;height:20px;border-radius:50%;background:${c};border:2px solid ${c===status.color?'#0F172A':'transparent'};cursor:pointer;padding:0;"></button>
+        `).join('')}
+      </div>
+      <button type="button" class="btn" data-save-prefs style="width:100%;justify-content:center;font-size:12px;padding:6px;">Enregistrer ces préférences</button>
+    </div>
+  `;
+}
+function wireCalendarSyncPreferences(prefsEl, person, status){
+  let selectedColor = status.color;
+  prefsEl.querySelectorAll('[data-pref-color]').forEach(btn=>{
+    btn.onclick = ()=>{
+      selectedColor = btn.dataset.prefColor;
+      prefsEl.querySelectorAll('[data-pref-color]').forEach(b=>{
+        b.style.border = `2px solid ${b.dataset.prefColor === selectedColor ? '#0F172A' : 'transparent'}`;
+      });
+    };
+  });
+  prefsEl.querySelector('[data-save-prefs]').onclick = async ()=>{
+    const syncPresence = prefsEl.querySelector('[data-pref-presence]').checked;
+    const syncAbsences = prefsEl.querySelector('[data-pref-absences]').checked;
+    await updateCalendarSyncPreferences(person.id, syncPresence, syncAbsences, selectedColor);
+    showToast(`Préférences de ${person.short} enregistrées`, '📅');
+  };
+}
+function renderCalendarSyncPersonBody(box, person, status, link){
+  const active = !!status.token;
   const statusEl = box.querySelector(`#cal-sync-status-${person.id}`);
   statusEl.textContent = active ? '✅ Active' : '⬜ Non activée';
   const bodyEl = box.querySelector(`#cal-sync-body-${person.id}`);
+  const prefsHtml = calendarSyncPreferencesHtml(person, status);
   if(active){
     bodyEl.innerHTML = `
+      ${prefsHtml}
       <input type="text" readonly value="${escapeHTML(link)}" style="width:100%;padding:8px 10px;border:1px solid var(--color-border);border-radius:6px;font-size:11.5px;font-family:inherit;margin-bottom:8px;" onclick="this.select();">
       <div class="flex gap-2">
         <button type="button" class="btn" data-copy-link style="flex:1;justify-content:center;font-size:12.5px;">Copier le lien</button>
         <button type="button" class="btn" data-revoke style="flex:1;justify-content:center;font-size:12.5px;color:#B91C1C;border-color:#FCA5A5;">Désactiver</button>
       </div>
+      <p class="text-muted" style="font-size:11px;margin-top:6px;">Le même lien peut être ajouté à plusieurs téléphones/comptes. "Désactiver" coupe l'accès à tous d'un coup ; les événements déjà ajoutés disparaissent au prochain rafraîchissement automatique de chaque appareil (pas instantané — ni Apple ni Google ne permettent de forcer une suppression immédiate à distance).</p>
     `;
+    wireCalendarSyncPreferences(bodyEl, person, status);
     bodyEl.querySelector('[data-copy-link]').onclick = ()=>{
       navigator.clipboard?.writeText(link);
       showToast('Lien copié', '📋');
     };
     bodyEl.querySelector('[data-revoke]').onclick = async ()=>{
       await revokeCalendarSyncToken(person.id);
-      renderCalendarSyncPersonBody(box, person, false, '');
+      renderCalendarSyncPersonBody(box, person, { ...status, token:null }, '');
       showToast(`Synchronisation de ${person.short} désactivée`, '📅');
     };
   } else {
-    bodyEl.innerHTML = `<button type="button" class="btn btn-primary" data-generate style="width:100%;justify-content:center;font-size:12.5px;">Générer mon lien</button>`;
+    bodyEl.innerHTML = `
+      ${prefsHtml}
+      <button type="button" class="btn btn-primary" data-generate style="width:100%;justify-content:center;font-size:12.5px;">Générer mon lien</button>
+    `;
+    wireCalendarSyncPreferences(bodyEl, person, status);
     bodyEl.querySelector('[data-generate]').onclick = async ()=>{
       const token = await generateCalendarSyncToken(person.id);
       const newLink = `${CALENDAR_FEED_URL}?person=${person.id}&token=${token}`;
-      renderCalendarSyncPersonBody(box, person, true, newLink);
+      renderCalendarSyncPersonBody(box, person, { ...status, token }, newLink);
       showToast(`Lien généré pour ${person.short}`, '📅');
     };
   }
@@ -1105,8 +1162,8 @@ function openCalendarSyncModal(){
     <p>Chaque vétérinaire peut abonner son calendrier iPhone ou Android à son planning Amivet. Une fois le lien ajouté, la mise à jour est automatique (toutes les quelques heures, gérée par le téléphone) — sens unique du planning vers le téléphone.</p>
     ${PEOPLE.map(p=> calendarSyncPersonBlockHtml(p)).join('')}
     <p class="text-muted" style="font-size:11.5px;line-height:1.6;margin-top:14px;">
-      <strong>iPhone :</strong> ouvrez le lien copié dans Safari, ou Réglages → Calendrier → Comptes → Ajouter un compte → Autre → Ajouter un calendrier en abonnement.<br>
-      <strong>Android :</strong> sur calendar.google.com (ordinateur), "Autres agendas" → "À partir de l'URL", collez le lien — il apparaît ensuite automatiquement sur le téléphone via le compte Google synchronisé.
+      <strong>iPhone :</strong> ouvrez le lien copié dans Safari, ou Réglages → Calendrier → Comptes → Ajouter un compte → Autre → Ajouter un calendrier en abonnement. La couleur choisie est reprise automatiquement.<br>
+      <strong>Android :</strong> sur calendar.google.com (ordinateur), "Autres agendas" → "À partir de l'URL", collez le lien — il apparaît ensuite automatiquement sur le téléphone via le compte Google synchronisé. Google ne reprend pas toujours la couleur choisie ici : vous pouvez la réajuster vous-même dans Google Agenda si besoin.
     </p>
     <div class="modal-actions" style="margin-top:16px;">
       <button class="btn" id="modal-cancel">Fermer</button>
@@ -1118,9 +1175,9 @@ function openCalendarSyncModal(){
   backdrop.onclick = (e)=>{ if(e.target===backdrop) close(); };
 
   PEOPLE.forEach(person=>{
-    getCalendarSyncStatus(person.id).then(token=>{
-      const link = token ? `${CALENDAR_FEED_URL}?person=${person.id}&token=${token}` : '';
-      renderCalendarSyncPersonBody(box, person, !!token, link);
+    getCalendarSyncStatus(person.id).then(status=>{
+      const link = status.token ? `${CALENDAR_FEED_URL}?person=${person.id}&token=${status.token}` : '';
+      renderCalendarSyncPersonBody(box, person, status, link);
     }).catch(e=>{
       box.querySelector(`#cal-sync-status-${person.id}`).textContent = 'Connexion impossible';
       console.warn(e);
@@ -3012,12 +3069,12 @@ function buildRecapTable(year){
     totalD+=dDays; totalS+=sDays; totalSatD+=satD; totalSatS+=satS;
     const diff = dDays - sDays;
     const diffClass = diff>0 ? 'ecart-david' : diff<0 ? 'ecart-stephane' : 'ecart-equilibre';
-    const diffTxt = diff===0 ? 'Équilibre' : `${formatNum(Math.abs(diff))} jour${Math.abs(diff)>1?'s':''} en plus pour ${diff>0?'David':'Stéphane'}`;
+    const diffTxt = diff===0 ? 'Équilibre' : `+${formatNum(Math.abs(diff))} ${diff>0?'David':'Stéphane'}`;
     rows += `<tr><td>${MONTH_NAMES[m]}</td><td>${formatNum(dDays)}</td><td>${formatNum(sDays)}</td><td>${satD}</td><td>${satS}</td><td class="${diffClass}">${diffTxt}</td></tr>`;
   }
   const totalDiff = totalD - totalS;
   const totalDiffClass = totalDiff>0?'ecart-david':totalDiff<0?'ecart-stephane':'ecart-equilibre';
-  const totalDiffTxt = totalDiff===0?'Équilibre':`${formatNum(Math.abs(totalDiff))} jour${Math.abs(totalDiff)>1?'s':''} en plus pour ${totalDiff>0?'David':'Stéphane'}`;
+  const totalDiffTxt = totalDiff===0?'Équilibre':`+${formatNum(Math.abs(totalDiff))} ${totalDiff>0?'David':'Stéphane'}`;
   return `
     <table class="recap-table">
       <thead><tr><th>Mois</th><th>David (j)</th><th>Stéphane (j)</th><th>Samedis David</th><th>Samedis Stéphane</th><th>Écart</th></tr></thead>

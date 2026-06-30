@@ -1,13 +1,22 @@
 // Flux ICS (iCalendar) abonnable depuis l'app Calendrier d'iOS ou Google Agenda sur
 // Android. Un vétérinaire génère son lien personnel depuis ⚙️ → Synchronisation
 // calendrier ; une fois ajouté à son téléphone, l'OS revient consulter cette URL toutes
-// les quelques heures pour se mettre à jour — aucune action supplémentaire de sa part.
-// L'URL contient le seul secret (le jeton) : pas d'autre authentification.
+// les quelques heures pour se mettre à jour — aucune action supplémentaire de sa part. Le
+// même lien peut être ajouté à plusieurs téléphones/comptes ; le révoquer coupe l'accès à
+// tous les appareils en même temps (au prochain rafraîchissement de chacun).
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!;
 
 const PERSON_LABELS: Record<string, string> = { david: 'David', stephane: 'Stéphane' };
+// Apple honore X-APPLE-CALENDAR-COLOR (hex libre) à l'abonnement ; la propriété standard
+// COLOR (RFC 7986) attend un nom CSS3, pas un hex — on fait correspondre les deux. Google
+// Calendar, lui, ne respecte généralement pas la couleur d'un flux importé : c'est
+// l'utilisateur qui la choisit dans son appli, ce flux ne peut pas la forcer.
+const CSS3_COLOR_NAMES: Record<string, string> = {
+  '#0F766E': 'teal', '#2563EB': 'blue', '#7C3AED': 'purple',
+  '#DC2626': 'red', '#16A34A': 'green', '#EA580C': 'orange',
+};
 // Fenêtre raisonnable pour garder le flux léger : le passé récent + 2 ans à venir.
 const PAST_DAYS = 90;
 const FUTURE_DAYS = 730;
@@ -22,6 +31,13 @@ function addDaysIso(iso: string, days: number){
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 }
+function emptyCalendar(personLabel: string){
+  return [
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Amivet Planning//Calendar Sync//FR',
+    'CALSCALE:GREGORIAN', `X-WR-CALNAME:${icsEscape(`Amivet — ${personLabel}`)}`,
+    'REFRESH-INTERVAL;VALUE=DURATION:PT4H', 'X-PUBLISHED-TTL:PT4H', 'END:VCALENDAR',
+  ].join('\r\n');
+}
 
 type DayStatus = { iso: string; status: 'present' | 'absent'; label: string };
 
@@ -35,20 +51,30 @@ Deno.serve(async (req) => {
       return new Response('Lien invalide.', { status: 400 });
     }
 
-    const verifyRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/verify_calendar_sync_token`, {
+    const accessRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_calendar_feed_access`, {
       method: 'POST',
       headers: { apikey: ANON_KEY, Authorization: `Bearer ${ANON_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ p_person_id: personId, p_token: token }),
     });
-    // Strict: un échec de la requête (table/fonction absente, erreur réseau...) doit
-    // refuser l'accès, jamais l'autoriser par défaut — seul un vrai "true" booléen passe.
-    if(!verifyRes.ok){
+    // Strict : un échec de la requête (table/fonction absente, erreur réseau...) doit
+    // refuser l'accès, jamais l'autoriser par défaut.
+    if(!accessRes.ok){
       return new Response('Vérification impossible.', { status: 502 });
     }
-    const valid = await verifyRes.json();
-    if(valid !== true){
-      return new Response('Lien invalide ou révoqué.', { status: 403 });
+    const rows = await accessRes.json();
+    const access = Array.isArray(rows) ? rows[0] : null;
+    if(!access){
+      return new Response('Lien invalide.', { status: 403 });
     }
+    if(access.status !== 'active'){
+      // Jeton tout juste révoqué/remplacé : un calendrier vide (et non une erreur) fait
+      // disparaître les événements déjà ajoutés au prochain rafraîchissement de l'appareil
+      // — c'est le plus proche d'une "suppression automatique" que permet ce mécanisme.
+      return new Response(emptyCalendar(personLabel), {
+        headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'no-cache' },
+      });
+    }
+    const { sync_presence, sync_absences, color } = access;
 
     const dataRes = await fetch(`${SUPABASE_URL}/rest/v1/planning_data?select=data&id=eq.singleton`, {
       headers: { apikey: SERVICE_ROLE_KEY, Authorization: `Bearer ${SERVICE_ROLE_KEY}` },
@@ -75,10 +101,10 @@ Deno.serve(async (req) => {
     }
     for(const iso of Object.keys(byDate).sort()){
       const { M, AM } = byDate[iso];
-      if(M === 'absent' || AM === 'absent'){
+      if((M === 'absent' || AM === 'absent') && sync_absences){
         const label = slots[`${iso}_${personId}_AM_label`] || slots[`${iso}_${personId}_M_label`] || '';
         days.push({ iso, status: 'absent', label });
-      } else if(M === 'present' || AM === 'present'){
+      } else if((M === 'present' || AM === 'present') && sync_presence){
         days.push({ iso, status: 'present', label: '' });
       }
     }
@@ -97,12 +123,16 @@ Deno.serve(async (req) => {
 
     const now = new Date();
     const dtstamp = now.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+    const hexColor = (typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color)) ? color : '#0F766E';
+    const css3Color = CSS3_COLOR_NAMES[hexColor] || 'teal';
     const lines: string[] = [
       'BEGIN:VCALENDAR',
       'VERSION:2.0',
       'PRODID:-//Amivet Planning//Calendar Sync//FR',
       'CALSCALE:GREGORIAN',
       `X-WR-CALNAME:${icsEscape(`Amivet — ${personLabel}`)}`,
+      `X-APPLE-CALENDAR-COLOR:${hexColor}`,
+      `COLOR:${css3Color}`,
       'REFRESH-INTERVAL;VALUE=DURATION:PT4H',
       'X-PUBLISHED-TTL:PT4H',
     ];
@@ -116,6 +146,7 @@ Deno.serve(async (req) => {
         `DTSTART;VALUE=DATE:${icsDate(ev.start)}`,
         `DTEND;VALUE=DATE:${icsDate(addDaysIso(ev.end, 1))}`,
         `SUMMARY:${icsEscape(summary)}`,
+        `COLOR:${css3Color}`,
         'TRANSP:TRANSPARENT',
         'END:VEVENT',
       );
